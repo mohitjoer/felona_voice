@@ -1,6 +1,6 @@
 {
   "name": "felona-voice",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Voice agent framework powered by JEV (Joint Embedding Vectors) for dynamic conversation flow",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -40,7 +40,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/felona-voice/felona-voice.git",
+    "url": "git+https://github.com/felona-voice/felona-voice.git",
     "directory": "packages/core"
   },
   "homepage": "https://github.com/felona-voice/felona-voice#readme",
