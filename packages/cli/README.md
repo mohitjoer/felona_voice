@@ -1,6 +1,6 @@
-# 🎙️ @felona/cli
+# 🎙️ felona-cli
 
-[![npm version](https://img.shields.io/npm/v/@felona/cli.svg?style=flat-square&color=3b82f6)](https://www.npmjs.com/package/@felona/cli)
+[![npm version](https://img.shields.io/npm/v/felona-cli.svg?style=flat-square&color=3b82f6)](https://www.npmjs.com/package/felona-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square)](./LICENSE)
 
 **Command-line interface for Felona Voice — inspect, visualize, test, and scaffold voice agents.**
@@ -8,9 +8,9 @@
 ## Installation
 
 ```bash
-npm install -g @felona/cli
+npm install -g felona-cli
 # or execute directly via npx
-npx @felona/cli --help
+npx felona-cli --help
 ```
 
 ## Commands

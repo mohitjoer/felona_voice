@@ -170,7 +170,7 @@ All providers implement pluggable interfaces — bring your own.
 ```
 packages/
 ├── core/          # Framework kernel (FelAgent, JEV, VoiceGraph, Visualizers)
-└── cli/           # Developer CLI (@felona/cli — visualize, scaffold, dev)
+└── cli/           # Developer CLI (felona-cli — visualize, scaffold, dev)
 examples/
 ├── basic-greeting/     # Minimal 3-action starter agent
 ├── customer-support/   # Multi-action support agent with tool calling

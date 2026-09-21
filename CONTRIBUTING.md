@@ -50,7 +50,7 @@ packages/
 │   │   ├── tts/           # Text-to-Speech providers (Deepgram, ElevenLabs)
 │   │   └── vad/           # Voice Activity Detection
 │   └── tests/             # Vitest test suite
-└── cli/                   # Developer CLI (@felona/cli)
+└── cli/                   # Developer CLI (felona-cli)
     └── src/index.ts       # CLI commands (visualize, dev)
 examples/                  # Reference examples & templates
 ```

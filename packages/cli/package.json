@@ -1,9 +1,9 @@
 {
-  "name": "@felona/cli",
+  "name": "felona-cli",
   "version": "0.2.0",
   "description": "CLI for Felona Voice — scaffold, run, and train voice agents",
   "bin": {
-    "felona": "./dist/index.js"
+    "felona": "dist/index.js"
   },
   "type": "module",
   "files": [
