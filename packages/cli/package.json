@@ -1,0 +1,21 @@
+{
+  "name": "@felona/cli",
+  "version": "0.1.0",
+  "description": "CLI for Felona Voice — scaffold, run, and train voice agents",
+  "bin": {
+    "felona": "./dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "felona-voice": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "license": "MIT"
+}

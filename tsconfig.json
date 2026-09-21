@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/cli" }
+  ],
+  "files": []
+}

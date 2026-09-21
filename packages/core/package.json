@@ -1,0 +1,51 @@
+{
+  "name": "felona-voice",
+  "version": "0.1.0",
+  "description": "Voice agent framework powered by JEV (Joint Embedding Vectors) for dynamic conversation flow",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "voice",
+    "agent",
+    "ai",
+    "jev",
+    "embedding",
+    "stt",
+    "tts",
+    "conversational-ai"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "onnxruntime-node": ">=1.18.0"
+  },
+  "peerDependenciesMeta": {
+    "onnxruntime-node": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
