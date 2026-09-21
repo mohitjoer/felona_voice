@@ -6,9 +6,15 @@
     "felona": "./dist/index.js"
   },
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "echo \"CLI tests pending\""
   },
   "dependencies": {
     "felona-voice": "*"
@@ -17,5 +23,11 @@
     "@types/node": "^20.14.0",
     "typescript": "^5.5.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/felona-voice/felona-voice.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/felona-voice/felona-voice#readme",
   "license": "MIT"
 }

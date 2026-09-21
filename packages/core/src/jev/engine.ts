@@ -40,7 +40,7 @@ export class JEVEngine implements IJEVEngine {
   }) {
     this.embeddingProvider = options.embeddingProvider;
     this.actionSpace = new ActionSpace(options.embeddingProvider);
-    this.confidenceThreshold = options.confidenceThreshold ?? 0.3;
+    this.confidenceThreshold = options.confidenceThreshold ?? 0.35;
   }
 
   /**
@@ -49,6 +49,11 @@ export class JEVEngine implements IJEVEngine {
   async initialize(actions: AgentAction[]): Promise<void> {
     await this.actionSpace.initialize(actions);
     this.initialized = true;
+  }
+
+  /** Get embedding provider name */
+  get providerName(): string {
+    return this.embeddingProvider.name;
   }
 
   /**
@@ -85,23 +90,82 @@ export class JEVEngine implements IJEVEngine {
     // Step 3: Match against action space
     const match = await this.match(targetVector);
 
+    // Route to fallback action if:
+    // 1. Top match is explicitly fallback
+    // 2. Match confidence is below the threshold
+    // 3. Ambiguous low-margin prediction (confidence < 0.55 with margin < 0.15)
+    const fallbackAction = this.actionSpace.getAction("fallback");
+    if (fallbackAction) {
+      const topScore = match.candidates[0]?.score ?? 0;
+      const runnerUpScore = match.candidates[1]?.score ?? 0;
+      const margin = topScore - runnerUpScore;
+
+      if (
+        match.action.id === "fallback" ||
+        match.confidence < this.confidenceThreshold ||
+        (match.confidence < 0.55 && margin < 0.15)
+      ) {
+        return {
+          action: fallbackAction,
+          confidence: match.confidence,
+          candidates: match.candidates,
+        };
+      }
+    }
+
     return match;
   }
 
   /**
-   * Encode the conversation context into a single embedding vector.
+   * Encode the conversation context into a single joint embedding vector.
    *
-   * The context string is constructed from:
-   * - System prompt (agent personality)
-   * - Recent conversation history
-   * - Current user utterance
-   * - Extracted slots
+   * Joint Embedding Fusion (JEV):
+   * 1. Primary vector: Current user utterance (immediate intent, 82% weight).
+   * 2. Context vector: Prior conversational trajectory (continuity, 18% weight).
    *
-   * This is the input to the predictor network.
+   * This guarantees that new user intents (e.g. topic changes, greetings, escalations)
+   * trigger immediately without being overpowered or trapped by prior conversation states.
    */
   async encode(context: ConversationContext): Promise<Float64Array> {
-    const contextString = this.buildContextString(context);
-    return this.embeddingProvider.embed(contextString);
+    if (!context.currentUtterance) {
+      const fallback = context.turns.length > 0 ? context.turns[context.turns.length - 1].content : "hello";
+      return this.embeddingProvider.embed(fallback);
+    }
+
+    // 1. Primary vector: immediate user utterance
+    const utteranceVec = await this.embeddingProvider.embed(context.currentUtterance);
+
+    // 2. Secondary vector: prior user requests
+    const priorTurns = context.turns
+      .filter((t) => t.role === "user")
+      .slice(-3);
+
+    if (priorTurns.length === 0) {
+      return utteranceVec;
+    }
+
+    const priorText = priorTurns.map((t) => t.content).join(". ");
+    const priorVec = await this.embeddingProvider.embed(priorText);
+
+    // 3. Fused vector
+    const dim = utteranceVec.length;
+    const fused = new Float64Array(dim);
+    const alpha = 0.82; // Immediate utterance weight
+    const beta = 0.18;  // Prior context weight
+
+    let sumSq = 0;
+    for (let i = 0; i < dim; i++) {
+      const val = alpha * utteranceVec[i] + beta * (priorVec[i] ?? 0);
+      fused[i] = val;
+      sumSq += val * val;
+    }
+
+    const norm = Math.sqrt(sumSq) || 1;
+    for (let i = 0; i < dim; i++) {
+      fused[i] /= norm;
+    }
+
+    return fused;
   }
 
   /**
@@ -133,45 +197,30 @@ export class JEVEngine implements IJEVEngine {
   /**
    * Build a text string from the conversation context for embedding.
    *
-   * Design: We want the embedding to capture:
-   * - What kind of agent this is (system prompt excerpt)
-   * - What has been discussed (recent turns)
-   * - What the user just said (current utterance)
-   * - What we know so far (slots)
+   * Design: The current user utterance is the decisive signal for next-node prediction.
+   * We weight the current utterance heavily and only include prior user queries for
+   * context topic, preventing previous agent responses from creating self-reinforcing loops.
    */
   private buildContextString(context: ConversationContext): string {
     const parts: string[] = [];
 
-    // Agent personality (truncated to keep embedding focused)
-    if (context.systemPrompt) {
-      const truncated = context.systemPrompt.slice(0, 200);
-      parts.push(`Agent: ${truncated}`);
-    }
-
-    // Recent conversation history (last 5 turns for embedding focus)
-    const recentTurns = context.turns.slice(-5);
-    if (recentTurns.length > 0) {
-      const history = recentTurns
-        .map(
-          (t) =>
-            `${t.role === "user" ? "User" : "Agent"}: ${t.content}`,
-        )
-        .join("\n");
-      parts.push(`History:\n${history}`);
-    }
-
-    // Current user utterance (most important for decision)
+    // 1. Current user utterance — primary intent signal (tripled for weight)
     if (context.currentUtterance) {
-      parts.push(`Current user message: ${context.currentUtterance}`);
+      const u = context.currentUtterance.trim();
+      parts.push(`User Query: ${u}`);
+      parts.push(`User Intent: ${u}`);
+      parts.push(`Current Utterance: ${u}`);
     }
 
-    // Extracted slots
-    const slotEntries = Object.entries(context.slots);
-    if (slotEntries.length > 0) {
-      const slotsStr = slotEntries
-        .map(([k, v]) => `${k}: ${String(v)}`)
-        .join(", ");
-      parts.push(`Known information: ${slotsStr}`);
+    // 2. Prior user queries only (provides conversation continuity without action-ID loops)
+    const priorUserTurns = context.turns
+      .filter((t) => t.role === "user")
+      .slice(-2);
+    if (priorUserTurns.length > 0) {
+      const history = priorUserTurns
+        .map((t) => `Prior Request: ${t.content}`)
+        .join("\n");
+      parts.push(`Recent Context:\n${history}`);
     }
 
     return parts.join("\n\n");

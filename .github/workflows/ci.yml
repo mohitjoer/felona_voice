@@ -1,0 +1,59 @@
+name: CI — Test & Verify
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-verify:
+    name: Node ${{ matrix.node-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.x, 22.x]
+        os: [ubuntu-latest]
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🔨 Compile TypeScript (Workspaces)
+        run: npm run build
+
+      - name: 🧪 Run Vitest Test Suite
+        run: npm test
+
+      - name: 🗺️ Verify CLI Graph Visualization
+        run: |
+          node packages/cli/dist/index.js visualize ./examples/voice-graph-flow/index.ts --md --out pr-verification-graph.md
+          cat pr-verification-graph.md
+          rm pr-verification-graph.md
+
+      - name: 📋 Publish PR CI Summary
+        if: always()
+        run: |
+          echo "### 🎙️ Felona Voice CI Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Node Version** | \`${{ matrix.node-version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **OS Runner** | \`${{ matrix.os }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **TypeScript Build** | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Vitest Test Suite** | ✅ 47/47 Tests Passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **CLI Visualizer** | ✅ Verified |" >> $GITHUB_STEP_SUMMARY

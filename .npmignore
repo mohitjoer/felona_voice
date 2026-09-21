@@ -1,0 +1,37 @@
+# Documentation
+docs/
+*.md
+!README.md
+agents/
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+agent-graph.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+
+# Examples & Sandbox
+examples/
+ztest_enviro/
+
+# GitHub & IDE
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependencies & Build cache
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Logs & Environment
+call-logs/
+*.log
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db

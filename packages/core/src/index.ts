@@ -11,15 +11,13 @@
  *   name: "My Agent",
  *   systemPrompt: "You are helpful.",
  *   stt: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY },
- *   tts: { provider: "elevenlabs", apiKey: process.env.ELEVEN_API_KEY },
- *   llm: { provider: "openai", apiKey: process.env.OPENAI_API_KEY, model: "gpt-4o-mini" },
+ *   stt: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY },
+ *   tts: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY, voice: "aura-asteria-en" },
  *   actions: [
  *     defineAction({
  *       id: "greet",
  *       description: "Greet the user warmly",
- *       handler: async (ctx) => ctx.llm.generate("Greet the user", {
- *         systemPrompt: ctx.conversation.systemPrompt,
- *       }),
+ *       handler: async () => "Hello! How can I assist you today?",
  *     }),
  *   ],
  * });
@@ -30,11 +28,48 @@
 
 // ─── Main Entry Points ─────────────────────────────────────────────────────
 export { FelAgent, defineAction, quickStart } from "./agent.js";
+export {
+  createAgent,
+  createSupportAgent,
+  createSalesAgent,
+  AgentBuilder,
+} from "./builder.js";
+export type { ActionHandlerFn } from "./builder.js";
+
+// ─── LangGraph-Style Voice Graph & Visualization ───────────────────────────
+export {
+  VoiceGraph,
+  CompiledVoiceGraph,
+  START,
+  END,
+} from "./graph/voice-graph.js";
+export {
+  visualizeGraph,
+  drawAscii,
+  drawMermaid,
+  drawMarkdown,
+  generateGraphMarkdown,
+  toMermaidLiveUrl,
+  generateGraphHtml,
+  extractGraphData,
+} from "./graph/visualize.js";
+export type {
+  NodeOptions,
+  NodeRunFn,
+  NodeRunResult,
+  GraphRunContext,
+  GraphInvokeInput,
+  GraphInvokeOutput,
+  GraphData,
+  VisualizeOptions,
+  VisualizeResult,
+} from "./graph/voice-graph.js";
 
 // ─── JEV Engine ─────────────────────────────────────────────────────────────
 export { JEVEngine, createJEVEngine } from "./jev/engine.js";
 export { ActionSpace, cosineSimilarity } from "./jev/action-space.js";
 export { OpenAIEmbeddingProvider } from "./jev/embeddings.js";
+export { FastSemanticEmbeddingProvider } from "./jev/fast-embeddings.js";
 
 // ─── Voice Pipeline ─────────────────────────────────────────────────────────
 export { VoicePipeline, createPipeline } from "./pipeline.js";
@@ -47,15 +82,24 @@ export {
 
 // ─── STT Providers ──────────────────────────────────────────────────────────
 export { DeepgramSTT, createDeepgramSTT } from "./stt/deepgram.js";
+export { WhisperSTT, createWhisperSTT, type WhisperSTTOptions } from "./stt/whisper.js";
+export { AssemblyAISTT, createAssemblyAISTT, type AssemblyAISTTOptions } from "./stt/assemblyai.js";
+export { AzureSTT, createAzureSTT, type AzureSTTOptions } from "./stt/azure.js";
+export { GoogleSTT, createGoogleSTT, type GoogleSTTOptions } from "./stt/google.js";
+export { pcmToWav } from "./stt/wav.js";
 
 // ─── TTS Providers ──────────────────────────────────────────────────────────
 export { ElevenLabsTTS, createElevenLabsTTS } from "./tts/eleven-labs.js";
+export { DeepgramTTS, createDeepgramTTS } from "./tts/deepgram.js";
+export { OpenAITTS, createOpenAITTS, type OpenAITTSOptions, type OpenAIVoice } from "./tts/openai.js";
+export { CartesiaTTS, createCartesiaTTS, type CartesiaTTSOptions } from "./tts/cartesia.js";
+export { AzureTTS, createAzureTTS, type AzureTTSOptions } from "./tts/azure.js";
+export { PollyTTS, createPollyTTS, type PollyTTSOptions } from "./tts/polly.js";
+export { LMNTTTS, createLMNTTTS, type LMNTTTSOptions } from "./tts/lmnt.js";
 
 // ─── VAD Providers ──────────────────────────────────────────────────────────
 export { EnergyVAD, createEnergyVAD } from "./vad/energy.js";
 
-// ─── LLM Providers ─────────────────────────────────────────────────────────
-export { OpenAILLM, createOpenAILLM } from "./llm/openai.js";
 
 // ─── Memory ─────────────────────────────────────────────────────────────────
 export { ConversationMemory, createMemory } from "./memory/context.js";
@@ -101,11 +145,6 @@ export type {
   VADProvider,
   VADResult,
   VADEvent,
-  // LLM
-  LLMProvider,
-  LLMInterface,
-  LLMOptions,
-  LLMContext,
   // Tools
   AgentTool,
   ToolExecutor,
@@ -116,6 +155,8 @@ export type {
   EmbeddingProvider,
   // Hooks
   AgentHooks,
-  // Config
+  // Config & Interactions
   FelAgentConfig,
+  InteractOptions,
+  InteractResult,
 } from "./types.js";

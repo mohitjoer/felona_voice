@@ -95,8 +95,6 @@ export interface AgentAction {
 export interface ActionContext {
   /** The full conversation context */
   conversation: ConversationContext;
-  /** LLM interface for generating responses */
-  llm: LLMInterface;
   /** Tool executor for calling external tools */
   tools: ToolExecutor;
   /** Conversation memory manager */
@@ -221,44 +219,6 @@ export type VADEvent =
   | { type: "speech_start"; timestampMs: number }
   | { type: "speech_end"; timestampMs: number; durationMs: number };
 
-// ─── LLM ────────────────────────────────────────────────────────────────────
-
-/** LLM provider interface */
-export interface LLMProvider {
-  /** Provider name (e.g., "openai", "anthropic") */
-  readonly name: string;
-  /** Create an LLM interface with specific config */
-  create(options: LLMOptions): LLMInterface;
-}
-
-export interface LLMOptions {
-  /** Model name (e.g., "gpt-4o-mini") */
-  model: string;
-  /** Temperature (0-2) */
-  temperature?: number;
-  /** Max tokens to generate */
-  maxTokens?: number;
-}
-
-/** LLM interface used by action handlers */
-export interface LLMInterface {
-  /** Generate a response given a prompt and conversation context */
-  generate(prompt: string, context?: LLMContext): Promise<string>;
-  /** Generate a streaming response */
-  generateStream(
-    prompt: string,
-    context?: LLMContext,
-  ): AsyncIterable<string>;
-}
-
-export interface LLMContext {
-  /** System prompt */
-  systemPrompt?: string;
-  /** Conversation history */
-  history?: Array<{ role: "user" | "assistant" | "system"; content: string }>;
-  /** Additional instructions */
-  instructions?: string;
-}
 
 // ─── Tools ──────────────────────────────────────────────────────────────────
 
@@ -363,37 +323,33 @@ export interface FelAgentConfig {
   /** Agent name */
   name: string;
   /** System prompt that defines the agent's personality */
-  systemPrompt: string;
+  systemPrompt?: string;
 
-  /** STT provider configuration */
-  stt: {
-    provider: string;
-    apiKey?: string;
-    language?: string;
-    [key: string]: unknown;
-  };
+  /** STT provider configuration or direct STTProvider instance */
+  stt?:
+    | {
+        provider: string;
+        apiKey?: string;
+        language?: string;
+        [key: string]: unknown;
+      }
+    | STTProvider;
 
-  /** TTS provider configuration */
-  tts: {
-    provider: string;
-    apiKey?: string;
-    voice?: string;
-    [key: string]: unknown;
-  };
+  /** TTS provider configuration or direct TTSProvider instance */
+  tts?:
+    | {
+        provider: string;
+        apiKey?: string;
+        voice?: string;
+        [key: string]: unknown;
+      }
+    | TTSProvider;
 
-  /** LLM provider configuration */
-  llm: {
-    provider: string;
-    apiKey?: string;
-    model?: string;
-    temperature?: number;
-    [key: string]: unknown;
-  };
 
   /** JEV engine configuration */
   jev?: {
     /** Embedding model/provider to use */
-    embeddingProvider?: string;
+    embeddingProvider?: string | EmbeddingProvider;
     embeddingApiKey?: string;
     /** Path to a trained predictor model (ONNX) */
     predictorModel?: string;
@@ -427,3 +383,36 @@ export interface FelAgentConfig {
     level?: "debug" | "info" | "warn" | "error";
   };
 }
+
+/** Options for direct agent interaction (simulate turn without WebSocket) */
+export interface InteractOptions {
+  /** The user's input text message */
+  userMessage: string;
+  /** Optional session identifier (defaults to a persistent single session) */
+  sessionId?: string;
+  /** Initial or updated slot values */
+  slots?: Record<string, unknown>;
+  /** Prior conversation history */
+  history?: Array<{ role: "user" | "agent"; content: string; actionId?: string }>;
+}
+
+/** Result of an agent interaction turn */
+export interface InteractResult {
+  /** The response text spoken by the agent */
+  text: string;
+  /** The action matched and executed by JEV */
+  action: AgentAction;
+  /** JEV confidence score (0 to 1) */
+  confidence: number;
+  /** All action candidates with their similarity scores */
+  candidates: Array<{ actionId: string; score: number }>;
+  /** Current slot values */
+  slots: Record<string, unknown>;
+  /** Telemetry information */
+  telemetry: {
+    latencyMs: number;
+    actionSpaceSize: number;
+    embeddingModel: string;
+  };
+}
+

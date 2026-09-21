@@ -9,14 +9,14 @@
  * JEV automatically decides which action to take based on what the user says.
  *
  * Usage:
- *   OPENAI_API_KEY=... DEEPGRAM_API_KEY=... ELEVEN_API_KEY=... npx tsx examples/basic-greeting/index.ts
+ *   DEEPGRAM_API_KEY=... ELEVEN_API_KEY=... npx tsx examples/basic-greeting/index.ts
  */
 import { FelAgent, defineAction } from "felona-voice";
 
 const agent = new FelAgent({
   name: "Greeting Bot",
   systemPrompt:
-    "You are a friendly, warm assistant. Keep responses brief and natural — you're on a voice call, not writing an essay. Use 1-2 sentences max.",
+    "You are a friendly, warm assistant. Keep responses brief and natural.",
 
   stt: {
     provider: "deepgram",
@@ -27,28 +27,14 @@ const agent = new FelAgent({
     apiKey: process.env.ELEVEN_API_KEY!,
     voice: "21m00Tcm4TlvDq8ikWAM", // Rachel
   },
-  llm: {
-    provider: "openai",
-    apiKey: process.env.OPENAI_API_KEY!,
-    model: "gpt-4o-mini",
-  },
 
   actions: [
     defineAction({
       id: "greet",
       description:
         "Greet the user warmly and introduce yourself. Use when the conversation just started or user says hello.",
-      handler: async (ctx) => {
-        return ctx.llm.generate(
-          "Greet the user warmly. Introduce yourself briefly and ask how you can help.",
-          {
-            systemPrompt: ctx.conversation.systemPrompt,
-            history: ctx.memory.getRecentTurns(3).map((t) => ({
-              role: t.role === "user" ? ("user" as const) : ("assistant" as const),
-              content: t.content,
-            })),
-          },
-        );
+      handler: async () => {
+        return "Hello! I am your Felona Voice assistant. How can I help you today?";
       },
     }),
 
@@ -57,16 +43,7 @@ const agent = new FelAgent({
       description:
         "Help the user with their question or request. Use when the user is asking for information, help, or assistance.",
       handler: async (ctx) => {
-        return ctx.llm.generate(
-          `Help the user with their question. User said: "${ctx.conversation.currentUtterance}"`,
-          {
-            systemPrompt: ctx.conversation.systemPrompt,
-            history: ctx.memory.getRecentTurns(10).map((t) => ({
-              role: t.role === "user" ? ("user" as const) : ("assistant" as const),
-              content: t.content,
-            })),
-          },
-        );
+        return `I can definitely help with "${ctx.conversation.currentUtterance}". What details would you like to know?`;
       },
     }),
 
@@ -74,13 +51,8 @@ const agent = new FelAgent({
       id: "farewell",
       description:
         "Say goodbye to the user. Use when the user says goodbye, thanks, or indicates they're done.",
-      handler: async (ctx) => {
-        return ctx.llm.generate(
-          "Say a warm goodbye to the user. Wish them well.",
-          {
-            systemPrompt: ctx.conversation.systemPrompt,
-          },
-        );
+      handler: async () => {
+        return "Thank you so much for calling! Have a wonderful rest of your day. Goodbye!";
       },
     }),
   ],

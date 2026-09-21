@@ -1,0 +1,23 @@
+# Documentation
+docs/
+*.md
+!README.md
+agents/
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+agent-graph.md
+
+# Source & Tests
+src/
+tests/
+*.tsbuildinfo
+
+# Test sandbox
+ztest_enviro/
+call-logs/
+*.log
+
+# Environment & Config
+.env
+.env.*

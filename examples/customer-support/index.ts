@@ -74,11 +74,6 @@ Always confirm actions before taking them.`,
     provider: "elevenlabs",
     apiKey: process.env.ELEVEN_API_KEY!,
   },
-  llm: {
-    provider: "openai",
-    apiKey: process.env.OPENAI_API_KEY!,
-    model: "gpt-4o-mini",
-  },
 
   tools: [lookupOrderTool, createTicketTool],
 
@@ -87,11 +82,8 @@ Always confirm actions before taking them.`,
       id: "greet",
       description:
         "Greet the customer and ask how you can help. Use at the start of the conversation.",
-      handler: async (ctx) => {
-        return ctx.llm.generate(
-          "Greet the customer professionally. Introduce yourself as Acme Corp support and ask how you can assist them today.",
-          { systemPrompt: ctx.conversation.systemPrompt },
-        );
+      handler: async () => {
+        return "Hello, thank you for calling Acme Corp support. My name is Alex. How can I assist you with your order or device today?";
       },
     }),
 
@@ -99,21 +91,8 @@ Always confirm actions before taking them.`,
       id: "troubleshoot",
       description:
         "Help the customer troubleshoot a technical issue. Ask clarifying questions to understand the problem.",
-      handler: async (ctx) => {
-        return ctx.llm.generate(
-          `Help troubleshoot the customer's issue. Ask clarifying questions if needed.
-Customer said: "${ctx.conversation.currentUtterance}"`,
-          {
-            systemPrompt: ctx.conversation.systemPrompt,
-            history: ctx.memory.getRecentTurns(10).map((t) => ({
-              role:
-                t.role === "user"
-                  ? ("user" as const)
-                  : ("assistant" as const),
-              content: t.content,
-            })),
-          },
-        );
+      handler: async () => {
+        return "I can help troubleshoot that issue. First, please ensure the power cable is securely connected and check if the indicator LED is flashing blue.";
       },
     }),
 
@@ -122,27 +101,19 @@ Customer said: "${ctx.conversation.currentUtterance}"`,
       description:
         "Look up an order status for the customer. Use when they ask about their order, delivery, or tracking.",
       handler: async (ctx) => {
-        // Try to extract order ID from the conversation
         const utterance = ctx.conversation.currentUtterance;
         const orderIdMatch = utterance.match(/\b\d{5,}\b/);
 
         if (orderIdMatch) {
-          const result = await ctx.tools.call("lookup_order", {
+          const result = (await ctx.tools.call("lookup_order", {
             orderId: orderIdMatch[0],
-          });
-          const order = result as Record<string, unknown>;
-          ctx.memory.setSlot("orderId", order.orderId);
-          ctx.memory.setSlot("orderStatus", order.status);
+          })) as { status: string; estimatedDelivery: string };
+          ctx.memory.setSlot("orderId", orderIdMatch[0]);
+          ctx.memory.setSlot("orderStatus", result.status);
 
-          return ctx.llm.generate(
-            `Tell the customer about their order. Order details: ${JSON.stringify(order)}`,
-            { systemPrompt: ctx.conversation.systemPrompt },
-          );
+          return `Order ${orderIdMatch[0]} is currently ${result.status} and scheduled for delivery on ${result.estimatedDelivery}.`;
         } else {
-          return ctx.llm.generate(
-            "Ask the customer for their order number so you can look it up.",
-            { systemPrompt: ctx.conversation.systemPrompt },
-          );
+          return "I'd be happy to look that up for you. Could you please provide your 5-digit order number?";
         }
       },
     }),
@@ -152,18 +123,13 @@ Customer said: "${ctx.conversation.currentUtterance}"`,
       description:
         "Escalate to a human agent. Use when the customer is frustrated, the issue is complex, or they explicitly ask for a human.",
       handler: async (ctx) => {
-        const ticket = await ctx.tools.call("create_ticket", {
+        const ticket = (await ctx.tools.call("create_ticket", {
           subject: "Customer escalation",
-          description: `Customer conversation escalated. Context: ${ctx.conversation.currentUtterance}`,
+          description: `Customer requested escalation. Context: ${ctx.conversation.currentUtterance}`,
           priority: "high",
-        });
+        })) as { ticketId: string };
 
-        return ctx.llm.generate(
-          `Let the customer know you're transferring them to a human agent. 
-A ticket has been created: ${JSON.stringify(ticket)}. 
-Apologize for any inconvenience and assure them they'll be helped soon.`,
-          { systemPrompt: ctx.conversation.systemPrompt },
-        );
+        return `I understand. I have created escalation ticket ${ticket.ticketId} and am transferring you directly to a senior specialist. Please hold.`;
       },
     }),
 
@@ -171,11 +137,8 @@ Apologize for any inconvenience and assure them they'll be helped soon.`,
       id: "close",
       description:
         "Close the conversation. Use when the customer's issue is resolved or they want to end the call.",
-      handler: async (ctx) => {
-        return ctx.llm.generate(
-          "Thank the customer for calling Acme Corp support. Wish them a great day. Ask if there's anything else before hanging up.",
-          { systemPrompt: ctx.conversation.systemPrompt },
-        );
+      handler: async () => {
+        return "Thank you for contacting Acme Corp support today. Have a wonderful rest of your day, goodbye!";
       },
     }),
   ],
@@ -205,11 +168,15 @@ Apologize for any inconvenience and assure them they'll be helped soon.`,
   },
 });
 
-agent.listen({ port: 8080 }).then(() => {
-  console.log("\n🎧 Acme Support Agent ready on ws://localhost:8080\n");
-});
+if (process.argv[1] && (process.argv[1].includes("customer-support") && !process.argv[1].includes("cli"))) {
+  agent.listen({ port: 8080 }).then(() => {
+    console.log("\n🎧 Acme Support Agent ready on ws://localhost:8080\n");
+  });
 
-process.on("SIGINT", async () => {
-  await agent.stop();
-  process.exit(0);
-});
+  process.on("SIGINT", async () => {
+    await agent.stop();
+    process.exit(0);
+  });
+}
+
+export default agent;

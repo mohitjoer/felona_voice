@@ -82,9 +82,17 @@ export class ConversationMemory extends EventEmitter implements MemoryManager {
   }
 
   /**
-   * Serialize the conversation to a format suitable for LLM context.
+   * Serialize the conversation turns to standard history format.
    * Returns an array of {role, content} messages.
    */
+  toHistory(): Array<{ role: "user" | "agent"; content: string }> {
+    return this.turns.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+    }));
+  }
+
+  /** Backwards compatibility alias for toHistory() */
   toLLMHistory(): Array<{ role: "user" | "assistant"; content: string }> {
     return this.turns.map((turn) => ({
       role: turn.role === "user" ? ("user" as const) : ("assistant" as const),

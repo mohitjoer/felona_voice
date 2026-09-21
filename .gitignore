@@ -7,6 +7,9 @@ dist/
 
 # Agent memory (personal)
 agents/
+AGENTS.md
+GEMINI.md
+CLAUDE.md
 
 # Logs
 call-logs/

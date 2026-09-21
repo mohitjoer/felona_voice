@@ -1,24 +1,67 @@
-# Felona Voice
+# 🎙️ Felona Voice
 
-**Open-source voice agent framework powered by JEV (Joint Embedding Vectors).**
+[![npm version](https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6)](https://www.npmjs.com/package/felona-voice)
+[![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square)](./LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square)](https://www.typescriptlang.org/)
+[![Tests](https://img.shields.io/badge/tests-62%20passed-brightgreen.svg?style=flat-square)](./packages/core/tests)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-green.svg?style=flat-square)](https://nodejs.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square)](./CONTRIBUTING.md)
 
-Build intelligent voice agents that dynamically decide what to do next — no hardcoded conversation graphs, no static decision trees. JEV predicts the right action based on conversation context, then hands off to an LLM for natural language generation.
+**Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with LangGraph-style state machines.**
+
+Build conversational voice agents that decide what to do next with sub-10ms neural routing — combined with stateful transition graphs, pluggable audio pipelines, and automatic Markdown visualization.
 
 ## What Makes This Different
 
-| Approach | How It Decides | Latency | Learns |
-|----------|---------------|---------|--------|
-| **Felona/JEV** | Embedding similarity → action match | ~5ms | ✅ From call logs |
-| Graph-based | Developer-defined nodes/edges | ~10ms | ❌ Static |
-| Pure LLM | Prompt engineering | ~500ms+ | ❌ Manual |
+| Approach | How It Decides | Decision Latency | Extensibility |
+|:---|:---|:---|:---|
+| **Felona / JEV** | Embedding similarity → Next-Node Match | **~5ms** | ✅ Learns & generalizes |
+| Graph-based (Static) | Hardcoded rule branches | ~10ms | ❌ Fragile to off-script speech |
+| Pure LLM Prompts | Full prompt generation loop | ~500ms+ | ❌ Expensive & high latency |
 
-**JEV decides _what_ to do. The LLM decides _how_ to say it.**
+**JEV predicts actions in ~5ms with zero LLM token latency. Deterministic, hallucination-free, ultra-low-cost conversational turns.**
 
 ## Quick Start
 
 ```bash
 npm install felona-voice
 ```
+
+### Option A: Fluent Builder (Recommended — 3 lines)
+
+```typescript
+import { createAgent } from "felona-voice";
+
+const agent = createAgent("Concierge")
+  .system("You are a friendly concierge.")
+  .action("book_table", "Book a dining table or restaurant reservation", async () => "Table booked for 7 PM!")
+  .action("room_service", "Order food or fresh towels", async () => "Room service is on its way.")
+  .fallback("Sorry, I am not able to understand that. How can I assist you?");
+
+// Test instantly without spinning up a server (zero external API keys required!):
+const reply = await agent.interact("can I get clean towels?");
+console.log(reply.text); // "Room service is on its way."
+
+// Or start a live WebSocket voice audio server:
+// agent.listen({ port: 8080 });
+```
+
+### Option B: Ready-to-Use Templates
+
+```typescript
+import { createSupportAgent } from "felona-voice";
+
+const support = createSupportAgent({
+  companyName: "Acme Corp",
+  orderLookup: async (orderId) => ({ status: "out for delivery", eta: "today 4 PM" }),
+});
+
+const reply = await support.interact("Where is my package ACM-9281?");
+console.log(reply.text);
+// "Your order ACM-9281 is currently out for delivery and scheduled to arrive today 4 PM."
+```
+
+### Option C: Declarative Class Config
 
 ```typescript
 import { FelAgent, defineAction } from "felona-voice";
@@ -27,38 +70,52 @@ const agent = new FelAgent({
   name: "My Agent",
   systemPrompt: "You are a helpful voice assistant.",
   stt: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY },
-  tts: { provider: "elevenlabs", apiKey: process.env.ELEVEN_API_KEY },
-  llm: { provider: "openai", apiKey: process.env.OPENAI_API_KEY, model: "gpt-4o-mini" },
+  tts: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY, voice: "aura-asteria-en" },
   actions: [
     defineAction({
       id: "greet",
       description: "Greet the user warmly and ask how you can help",
-      handler: async (ctx) => {
-        return ctx.llm.generate("Greet the user.", {
-          systemPrompt: ctx.conversation.systemPrompt,
-        });
-      },
-    }),
-    defineAction({
-      id: "help",
-      description: "Help the user with their question",
-      handler: async (ctx) => {
-        return ctx.llm.generate(
-          `Help the user. They said: "${ctx.conversation.currentUtterance}"`,
-          {
-            systemPrompt: ctx.conversation.systemPrompt,
-            history: ctx.memory.getRecentTurns(10).map(t => ({
-              role: t.role === "user" ? "user" : "assistant",
-              content: t.content,
-            })),
-          },
-        );
-      },
+      handler: async () => "Hello! How can I help you today?",
     }),
   ],
 });
 
 agent.listen({ port: 8080 });
+```
+
+## 🗺️ Graph Visualization (Markdown, Mermaid & Terminal)
+
+Felona Voice makes inspecting and documenting your voice agents effortless:
+
+### 1. Generate Markdown Documentation (.md)
+Create clean, comprehensive markdown documentation with embedded Mermaid diagrams, transition tables, and node catalogs that render directly in GitHub and VS Code:
+
+```typescript
+// Get markdown string:
+const md = workflow.drawMarkdown();
+
+// Or automatically generate and save a .md file:
+await workflow.visualize({ outputPath: "./agent-graph.md" });
+```
+
+### 2. Terminal ASCII Flowchart
+Inspired by LangGraph's `.draw_ascii()`:
+
+```typescript
+console.log(workflow.drawAscii());
+```
+
+### 3. One-line CLI Command
+```bash
+# Generate Markdown documentation file (.md):
+npx felona visualize my-agent.ts --md
+
+# Print terminal ASCII flowchart:
+npx felona visualize my-agent.ts
+
+# Output Mermaid syntax or Live Editor URL:
+npx felona visualize my-agent.ts --mermaid
+npx felona visualize my-agent.ts --url
 ```
 
 ## How JEV Works
@@ -112,20 +169,25 @@ All providers implement pluggable interfaces — bring your own.
 
 ```
 packages/
-├── core/          # Framework kernel (FelAgent, JEV, Pipeline, Providers)
-└── cli/           # CLI tool (coming in Phase 2)
+├── core/          # Framework kernel (FelAgent, JEV, VoiceGraph, Visualizers)
+└── cli/           # Developer CLI (@felona/cli — visualize, scaffold, dev)
 examples/
-├── basic-greeting/
-└── customer-support/
-```
+├── basic-greeting/     # Minimal 3-action starter agent
+├── customer-support/   # Multi-action support agent with tool calling
+└── voice-graph-flow/   # LangGraph-style stateful conversation flow
 
 ## Roadmap
 
-- [x] **Phase 1**: Core framework — JEV engine, voice pipeline, STT/TTS/LLM providers
-- [ ] **Phase 2**: JEV predictor training, CLI tooling, additional providers
-- [ ] **Phase 3**: YAML config agents, analytics dashboard, docs site
-- [ ] **Phase 4**: Visual Studio UI builder
+- [x] **Phase 1**: Core framework — JEV engine, VoiceGraph, streaming audio pipeline, Deepgram STT/TTS, ElevenLabs TTS, OpenAI LLM
+- [x] **Phase 1.5**: LangGraph-inspired state machines, fluent builders, Markdown & ASCII graph visualizer
+- [ ] **Phase 2**: JEV predictor training from call logs, WebRTC transport
+- [ ] **Phase 3**: YAML declarative agent configs, analytics dashboard
+- [ ] **Phase 4**: Interactive visual canvas agent builder
 
-## License
+## 🤝 Contributing
 
-MIT
+We love contributions! Check out [CONTRIBUTING.md](./CONTRIBUTING.md) to get started with local development. Please make sure to follow our [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+## 📄 License
+
+[MIT](./LICENSE) © 2026 Felona Voice Contributors

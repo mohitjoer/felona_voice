@@ -1,0 +1,22 @@
+# Exclude documentation and project files from npm package
+docs/
+*.md
+!README.md
+agents/
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+
+# Source & Tests
+src/
+tests/
+*.tsbuildinfo
+
+# Test sandbox
+ztest_enviro/
+call-logs/
+*.log
+
+# Environment & Config
+.env
+.env.*

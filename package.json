@@ -8,11 +8,11 @@
     "packages/cli"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/cli",
     "dev": "npm run dev --workspace=packages/core",
     "test": "npm run test --workspaces",
     "lint": "eslint packages/*/src/**/*.ts",
-    "clean": "rm -rf packages/*/dist"
+    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo"
   },
   "engines": {
     "node": ">=20.0.0"

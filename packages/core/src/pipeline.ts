@@ -6,7 +6,6 @@ import type {
   STTStream,
   TTSProvider,
   VADProvider,
-  LLMInterface,
   ConversationContext,
   ActionMatch,
   AgentHooks,
@@ -19,14 +18,14 @@ import type { CallLogger, JEVDecisionLog } from "./analytics/logger.js";
 /**
  * VoicePipeline — Orchestrates the full voice conversation loop.
  *
- * Audio In → VAD → STT → JEV Decision → LLM Generate → TTS → Audio Out
+ * Audio In → VAD → STT → JEV Decision → Action Handler → TTS → Audio Out
  *
  * One pipeline instance is created per active session (call).
  * It manages:
  * - Audio buffering and VAD-based turn detection
  * - Streaming STT transcription
  * - JEV-powered action selection
- * - LLM response generation
+ * - Direct action handler execution (ultra-low-latency, zero-LLM overhead)
  * - Streaming TTS playback
  * - Barge-in (user interruption) handling
  */
@@ -36,7 +35,6 @@ export class VoicePipeline extends EventEmitter {
   private readonly stt: STTProvider;
   private readonly tts: TTSProvider;
   private readonly vad: VADProvider;
-  private readonly llm: LLMInterface;
   private readonly jev: JEVEngine;
   private readonly memory: ConversationMemory;
   private readonly tools: ToolRegistry;
@@ -59,7 +57,6 @@ export class VoicePipeline extends EventEmitter {
     stt: STTProvider;
     tts: TTSProvider;
     vad: VADProvider;
-    llm: LLMInterface;
     jev: JEVEngine;
     memory: ConversationMemory;
     tools: ToolRegistry;
@@ -74,7 +71,6 @@ export class VoicePipeline extends EventEmitter {
     this.stt = options.stt;
     this.tts = options.tts;
     this.vad = options.vad;
-    this.llm = options.llm;
     this.jev = options.jev;
     this.memory = options.memory;
     this.tools = options.tools;
@@ -240,10 +236,9 @@ export class VoicePipeline extends EventEmitter {
         `JEV selected: "${match.action.id}" (confidence: ${match.confidence.toFixed(3)}, latency: ${jevLatencyMs.toFixed(1)}ms)`,
       );
 
-      // Execute the action handler — this calls the LLM to generate response text
+      // Execute the action handler — returns direct response text
       const actionContext = {
         conversation: context,
-        llm: this.llm,
         tools: this.tools,
         memory: this.memory,
         session: this.session,
