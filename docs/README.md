@@ -15,7 +15,7 @@ Welcome to the comprehensive documentation for **Felona Voice** — the ultra-lo
 | **[Installation & Setup Guide](./INSTALLATION.md)** | Step-by-step installation for npm, pnpm, bun, yarn, TypeScript ESM config, and audio provider setup. |
 | **[Architecture & Core Principles](./ARCHITECTURE.md)** | Why Felona Voice is 100% LLM-free, ~5ms neural action routing, audio pipeline flow, and latency comparison. |
 | **[Complete API Reference](./API_REFERENCE.md)** | Exhaustive documentation of every class, function, method, interface, and configuration parameter. |
-| **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** | How to build LangGraph-style stateful conversation machines, directed edges, and fallback protection. |
+| **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** | How to build stateful conversational graphs, directed edges, and fallback protection. |
 | **[Graph Visualization Guide](./VISUALIZATION_GUIDE.md)** | Generate instant Markdown (`.md`) diagrams, terminal ASCII flowcharts, and Mermaid diagrams via API or CLI. |
 
 ---
@@ -52,5 +52,5 @@ console.log(agent.drawMarkdown());
 
 1. **JEV Neural Routing**: Instead of passing conversational turns to a slow, costly LLM, JEV encodes user utterances into a semantic vector space and matches them against candidate actions via cosine similarity in **~5 milliseconds**.
 2. **Deterministic & Safe**: Actions execute pure TypeScript/JavaScript code, database queries, or tool calls. No hallucinations, no unpredictable prompt drift.
-3. **LangGraph-Style State Machine**: Build stateful conversational graphs using `.addNode()`, `.addEdge()`, and `.invoke()`.
+3. **Stateful Conversation Graphs**: Build stateful conversational workflows using `.addNode()`, `.addEdge()`, and `.invoke()`.
 4. **Markdown Native Visualization**: Generate diagrams that render automatically in GitHub, VS Code Markdown preview, and docs platforms with zero configuration.

@@ -1,5 +1,5 @@
 /**
- * VoiceGraph Flow Example — LangGraph-style conversational state machine.
+ * VoiceGraph Flow Example — Stateful conversational graph workflow.
  *
  * Visualize with:
  *   npx felona visualize ./examples/voice-graph-flow/index.ts

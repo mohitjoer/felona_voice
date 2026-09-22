@@ -15,7 +15,7 @@
   <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square" alt="PRs Welcome" /></a>
 </p>
 
-**Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with LangGraph-style state machines.**
+**Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with stateful conversational graphs.**
 
 Build conversational voice agents that decide what to do next with sub-10ms neural routing — combined with stateful transition graphs, pluggable audio pipelines, and automatic Markdown visualization.
 
@@ -109,7 +109,7 @@ await workflow.visualize({ outputPath: "./agent-graph.md" });
 ```
 
 ### 2. Terminal ASCII Flowchart
-Inspired by LangGraph's `.draw_ascii()`:
+Render graph structures directly in your CLI:
 
 ```typescript
 console.log(workflow.drawAscii());
@@ -184,12 +184,12 @@ packages/
 examples/
 ├── basic-greeting/     # Minimal 3-action starter agent
 ├── customer-support/   # Multi-action support agent with tool calling
-└── voice-graph-flow/   # LangGraph-style stateful conversation flow
+└── voice-graph-flow/   # Stateful conversation graph flow example
 
 ## Roadmap
 
 - [x] **Phase 1**: Core framework — JEV engine, VoiceGraph, streaming audio pipeline, Deepgram STT/TTS, ElevenLabs TTS, OpenAI LLM
-- [x] **Phase 1.5**: LangGraph-inspired state machines, fluent builders, Markdown & ASCII graph visualizer
+- [x] **Phase 1.5**: Stateful conversation graphs, fluent builders, Markdown & ASCII graph visualizer
 - [ ] **Phase 2**: JEV predictor training from call logs, WebRTC transport
 - [ ] **Phase 3**: YAML declarative agent configs, analytics dashboard
 - [ ] **Phase 4**: Interactive visual canvas agent builder

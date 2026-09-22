@@ -86,7 +86,6 @@ export function extractGraphData(target: unknown): GraphData {
 
 /**
  * Render a beautiful Unicode/ASCII directed graph in the terminal.
- * Inspired by LangGraph draw_ascii().
  */
 export function drawAscii(target: unknown, options?: { title?: string }): string {
   const data = extractGraphData(target);

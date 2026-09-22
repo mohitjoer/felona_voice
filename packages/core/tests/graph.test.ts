@@ -7,8 +7,8 @@ interface TestState {
   count?: number;
 }
 
-describe("VoiceGraph (LangGraph style)", () => {
-  it("compiles and invokes with LangGraph-style workflow", async () => {
+describe("VoiceGraph", () => {
+  it("compiles and invokes stateful conversational workflow", async () => {
     const workflow = new VoiceGraph<TestState>()
       .setState({ customerName: "Sarah", orderId: "ACM-100" })
       .addNode("greet", {

@@ -43,7 +43,7 @@ packages/
 │   ├── src/
 │   │   ├── agent.ts       # FelAgent main entrypoint
 │   │   ├── builder.ts     # Fluent AgentBuilder API
-│   │   ├── graph/         # LangGraph-style VoiceGraph & Visualizers
+│   │   ├── graph/         # VoiceGraph state machine & Visualizers
 │   │   ├── jev/           # Joint Embedding Vector neural routing
 │   │   ├── pipeline.ts    # Audio streaming pipeline orchestrator
 │   │   ├── stt/           # Speech-to-Text providers (Deepgram)

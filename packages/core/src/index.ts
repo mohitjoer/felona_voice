@@ -36,7 +36,7 @@ export {
 } from "./builder.js";
 export type { ActionHandlerFn } from "./builder.js";
 
-// ─── LangGraph-Style Voice Graph & Visualization ───────────────────────────
+// ─── Voice Graph & State Machine Visualization ─────────────────────────
 export {
   VoiceGraph,
   CompiledVoiceGraph,

@@ -6,7 +6,7 @@ Exhaustive documentation for every class, function, interface, and method in `fe
 
 ## 1. `VoiceGraph<TState>` & `CompiledVoiceGraph<TState>`
 
-LangGraph-inspired conversational state machine with JEV neural routing.
+Stateful conversational workflow and state machine with JEV neural routing.
 
 ### `new VoiceGraph<TState>()`
 Creates a new uncompiled voice graph builder.

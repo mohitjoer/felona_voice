@@ -12,7 +12,7 @@
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square" alt="TypeScript" /></a>
 </p>
 
-**Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with LangGraph-style state machines.**
+**Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with stateful conversational graphs.**
 
 ## Installation
 
@@ -45,7 +45,7 @@ console.log(reply.action.id); // "room_service"
   - **STT**: Deepgram Nova-2, OpenAI Whisper, AssemblyAI, Azure Speech, Google Cloud Speech.
   - **TTS**: Cartesia Sonic (<100ms), Deepgram Aura, ElevenLabs, OpenAI Speech, Azure Speech, Amazon Polly, LMNT.
   - **VAD**: Zero-dependency energy-based speech boundary detection.
-- **LangGraph-Style State Machines**: `VoiceGraph` with `.addNode()`, `.addEdge()`, `.compile()`, and `.invoke()`.
+- **Stateful Conversational Graphs**: `VoiceGraph` with `.addNode()`, `.addEdge()`, `.compile()`, and `.invoke()`.
 - **Markdown & Mermaid Visualization**: Automatic generation of architectural diagrams and transition tables.
 
 ## Documentation & Repository

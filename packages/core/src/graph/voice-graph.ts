@@ -66,7 +66,7 @@ export type { GraphData, VisualizeOptions, VisualizeResult };
 /**
  * CompiledVoiceGraph — A runnable, compiled stateful voice graph powered by JEV.
  *
- * Implements LangGraph-style `.invoke()`, `.simulate()`, and `.drawMermaid()`.
+ * Implements conversational `.invoke()`, `.simulate()`, and `.drawMermaid()`.
  */
 export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<string, unknown>> {
   private readonly nodes: Map<string, NodeOptions<TState>>;
@@ -91,7 +91,7 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
   }
 
   /**
-   * Run a single conversation turn through the graph (LangGraph invoke pattern).
+   * Run a single conversation turn through the graph.
    */
   async invoke(input: string | GraphInvokeInput<TState>): Promise<GraphInvokeOutput<TState>> {
     const message = typeof input === "string" ? input : input.message;
@@ -228,7 +228,7 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
   }
 
   /**
-   * Export the graph structure as a Mermaid flowchart (similar to LangGraph .drawMermaid()).
+   * Export the graph structure as a Mermaid flowchart.
    */
   drawMermaid(): string {
     const lines: string[] = ["graph TD"];
@@ -345,7 +345,7 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
 }
 
 /**
- * VoiceGraph — LangGraph-inspired stateful conversational graph builder for voice agents.
+ * VoiceGraph — Stateful conversational graph builder for voice agents.
  *
  * @example
  * ```typescript
