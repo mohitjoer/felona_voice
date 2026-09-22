@@ -1,8 +1,16 @@
-# 🎙️ Felona Voice (`felona-voice`)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/felona-voice/felona-voice/main/public/logo.png" alt="Felona Voice" width="280" />
+</p>
 
-[![npm version](https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6)](https://www.npmjs.com/package/felona-voice)
-[![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square)](./LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square)](https://www.typescriptlang.org/)
+<p align="center">
+  <strong>Sub-10ms Voice Agent Framework powered by Joint Embedding Vectors (JEV)</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/felona-voice"><img src="https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6" alt="npm version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square" alt="License: MIT" /></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square" alt="TypeScript" /></a>
+</p>
 
 **Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with LangGraph-style state machines.**
 

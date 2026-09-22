@@ -1,11 +1,19 @@
-# 🎙️ Felona Voice
+<p align="center">
+  <img src="./public/logo.png" alt="Felona Voice" width="300" />
+</p>
 
-[![npm version](https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6)](https://www.npmjs.com/package/felona-voice)
-[![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square)](./LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-62%20passed-brightgreen.svg?style=flat-square)](./packages/core/tests)
-[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-green.svg?style=flat-square)](https://nodejs.org/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square)](./CONTRIBUTING.md)
+<p align="center">
+  <strong>Sub-10ms Voice Agent Framework powered by Joint Embedding Vectors (JEV)</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/felona-voice"><img src="https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6" alt="npm version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square" alt="License: MIT" /></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square" alt="TypeScript" /></a>
+  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-62%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-green.svg?style=flat-square" alt="Node.js" /></a>
+  <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square" alt="PRs Welcome" /></a>
+</p>
 
 **Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with LangGraph-style state machines.**
 
@@ -26,6 +34,8 @@ Build conversational voice agents that decide what to do next with sub-10ms neur
 ```bash
 npm install felona-voice
 ```
+
+> 📖 *For pnpm, bun, yarn, CLI setup, and TypeScript config, see the **[Full Installation Guide](./docs/INSTALLATION.md)**.*
 
 ### Option A: Fluent Builder (Recommended — 3 lines)
 

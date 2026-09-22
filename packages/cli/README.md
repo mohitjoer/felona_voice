@@ -1,9 +1,15 @@
-# 🎙️ felona-cli
+<p align="center">
+  <img src="https://raw.githubusercontent.com/felona-voice/felona-voice/main/public/logo.png" alt="Felona Voice CLI" width="280" />
+</p>
 
-[![npm version](https://img.shields.io/npm/v/felona-cli.svg?style=flat-square&color=3b82f6)](https://www.npmjs.com/package/felona-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square)](./LICENSE)
+<p align="center">
+  <strong>Command-line interface for Felona Voice — inspect, visualize, test, and scaffold voice agents.</strong>
+</p>
 
-**Command-line interface for Felona Voice — inspect, visualize, test, and scaffold voice agents.**
+<p align="center">
+  <a href="https://www.npmjs.com/package/felona-cli"><img src="https://img.shields.io/npm/v/felona-cli.svg?style=flat-square&color=3b82f6" alt="npm version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square" alt="License: MIT" /></a>
+</p>
 
 ## Installation
 

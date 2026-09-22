@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/felona-voice/felona-voice/main/public/logo.png" alt="Felona Voice" width="280" />
+</p>
+
 # 🎙️ Felona Voice Documentation
 
 Welcome to the comprehensive documentation for **Felona Voice** — the ultra-low-latency, open-source voice agent framework powered by **Joint Embedding Vectors (JEV)**.
@@ -8,6 +12,7 @@ Welcome to the comprehensive documentation for **Felona Voice** — the ultra-lo
 
 | Guide | Description |
 | :--- | :--- |
+| **[Installation & Setup Guide](./INSTALLATION.md)** | Step-by-step installation for npm, pnpm, bun, yarn, TypeScript ESM config, and audio provider setup. |
 | **[Architecture & Core Principles](./ARCHITECTURE.md)** | Why Felona Voice is 100% LLM-free, ~5ms neural action routing, audio pipeline flow, and latency comparison. |
 | **[Complete API Reference](./API_REFERENCE.md)** | Exhaustive documentation of every class, function, method, interface, and configuration parameter. |
 | **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** | How to build LangGraph-style stateful conversation machines, directed edges, and fallback protection. |
