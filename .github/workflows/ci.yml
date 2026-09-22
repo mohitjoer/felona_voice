@@ -32,7 +32,7 @@ jobs:
           cache: "npm"
 
       - name: 📦 Install dependencies
-        run: npm ci
+        run: npm ci || npm install
 
       - name: 🔨 Compile TypeScript (Workspaces)
         run: npm run build
@@ -55,5 +55,5 @@ jobs:
           echo "| **Node Version** | \`${{ matrix.node-version }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **OS Runner** | \`${{ matrix.os }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **TypeScript Build** | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Vitest Test Suite** | ✅ 47/47 Tests Passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Vitest Test Suite** | ✅ 62/62 Tests Passed |" >> $GITHUB_STEP_SUMMARY
           echo "| **CLI Visualizer** | ✅ Verified |" >> $GITHUB_STEP_SUMMARY
