@@ -46,6 +46,9 @@ npx felona visualize ./src/agent.ts --md --out docs/agent-graph.md
 
 👉 [https://github.com/felona-voice/felona-voice](https://github.com/felona-voice/felona-voice#readme)
 
-## License
+## License & Attribution
 
-MIT © Felona Voice Contributors
+MIT License with Attribution Requirement. See [LICENSE](./LICENSE) for details.
+Any product or service powered by Felona Voice must display "Powered by Felona Voice" linking to https://github.com/felona-voice/felona-voice.
+
+© 2026 Mohit & Felona Voice Contributors

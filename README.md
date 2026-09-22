@@ -198,6 +198,13 @@ examples/
 
 We love contributions! Check out [CONTRIBUTING.md](./CONTRIBUTING.md) to get started with local development. Please make sure to follow our [Code of Conduct](./CODE_OF_CONDUCT.md).
 
-## 📄 License
+## 📄 License & Attribution
 
-[MIT](./LICENSE) © 2026 Felona Voice Contributors
+Licensed under the **MIT License with Attribution Requirement**. See [LICENSE](./LICENSE) for full details.
+
+You are free to use, modify, and distribute this software for both personal and commercial projects. However, **visible attribution is legally required**:
+- Any application, SaaS, website, documentation, or product powered by Felona Voice must prominently display:
+  > **"Powered by Felona Voice"** or **"Built with Felona Voice"** with a direct link to [https://github.com/felona-voice/felona-voice](https://github.com/felona-voice/felona-voice).
+- Credit can be placed in your product interface (footer, about screen, or settings), landing page, or documentation.
+
+© 2026 Mohit & Felona Voice Contributors
