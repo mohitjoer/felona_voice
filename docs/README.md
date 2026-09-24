@@ -17,6 +17,7 @@ Welcome to the comprehensive documentation for **Felona Voice** — the ultra-lo
 | **[Complete API Reference](./API_REFERENCE.md)** | Exhaustive documentation of every class, function, method, interface, and configuration parameter. |
 | **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** | How to build stateful conversational graphs, directed edges, and fallback protection. |
 | **[Graph Visualization Guide](./VISUALIZATION_GUIDE.md)** | Generate instant Markdown (`.md`) diagrams, terminal ASCII flowcharts, and Mermaid diagrams via API or CLI. |
+| **[Telephony & Twilio Guide](./TELEPHONY_TWILIO_GUIDE.md)** | Connect voice agents to mobile phone calls via Twilio Media Streams, G.711 μ-law transcoding, and TwiML. |
 
 ---
 

@@ -11,8 +11,11 @@ import type {
   InteractOptions,
   InteractResult,
   EmbeddingProvider,
+  Transport,
 } from "./types.js";
 import { WebSocketTransport } from "./transport/websocket.js";
+import { TwilioTransport } from "./telephony/twilio-transport.js";
+import { createTwilioStreamTwiML, type TwilioStreamTwiMLOptions } from "./telephony/twiml.js";
 import { JEVEngine } from "./jev/engine.js";
 import { OpenAIEmbeddingProvider } from "./jev/embeddings.js";
 import { FastSemanticEmbeddingProvider } from "./jev/fast-embeddings.js";
@@ -68,7 +71,7 @@ import { EnergyVAD } from "./vad/energy.js";
  */
 export class FelAgent extends EventEmitter {
   private readonly config: FelAgentConfig;
-  private transport: WebSocketTransport;
+  private transport: Transport;
   private readonly jev: JEVEngine;
   private readonly logger: CallLogger;
   private readonly tools: ToolRegistry;
@@ -128,15 +131,44 @@ export class FelAgent extends EventEmitter {
     });
 
     // Initialize transport
-    this.transport = new WebSocketTransport();
+    if (config.transport && typeof (config.transport as Transport).start === "function") {
+      this.transport = config.transport as Transport;
+    } else if (
+      typeof config.transport === "object" &&
+      (config.transport as { type?: string }).type === "twilio"
+    ) {
+      const opts = config.transport as { port?: number; host?: string; path?: string; streamUrl?: string; greeting?: string };
+      this.transport = new TwilioTransport(opts);
+    } else {
+      this.transport = new WebSocketTransport();
+    }
+  }
+
+  /**
+   * Set a custom transport instance (e.g., TwilioTransport).
+   */
+  setTransport(transport: Transport): this {
+    this.transport = transport;
+    return this;
   }
 
   /**
    * Start the agent — initialize JEV, start the transport, begin accepting calls.
    */
-  async listen(options?: { port?: number; host?: string }): Promise<void> {
-    const port = options?.port ?? this.config.transport?.port ?? 8080;
-    const host = options?.host ?? this.config.transport?.host;
+  async listen(options?: {
+    port?: number;
+    host?: string;
+    path?: string;
+    server?: import("http").Server | import("https").Server;
+  }): Promise<void> {
+    const transportConfig = typeof this.config.transport === "object" && !("start" in this.config.transport)
+      ? this.config.transport
+      : undefined;
+
+    const port = options?.port ?? transportConfig?.port ?? 8080;
+    const host = options?.host ?? transportConfig?.host;
+    const path = options?.path ?? transportConfig?.path;
+    const server = options?.server;
 
     this.logger.log("info", `Starting Felona Voice agent: "${this.config.name}"`);
 
@@ -161,7 +193,7 @@ export class FelAgent extends EventEmitter {
     );
 
     // Step 4: Start the transport server
-    await this.transport.start({ port, host });
+    await this.transport.start({ port, host, path, server });
 
     this.initialized = true;
     this.logger.log("info", `Agent "${this.config.name}" ready on port ${port}`);
@@ -177,6 +209,59 @@ export class FelAgent extends EventEmitter {
     );
 
     this.emit("ready", { port, host });
+  }
+
+  /**
+   * Start a dedicated Twilio Telephony media stream server.
+   * Automatically handles bidirectional audio and serves TwiML for phone number webhooks.
+   */
+  async listenTwilio(options?: {
+    port?: number;
+    host?: string;
+    path?: string;
+    webhookPath?: string | null;
+    streamUrl?: string;
+    greeting?: string;
+    server?: import("http").Server;
+  }): Promise<void> {
+    const port = options?.port ?? 8080;
+    const host = options?.host ?? "0.0.0.0";
+    const path = options?.path ?? "/media";
+
+    this.transport = new TwilioTransport({
+      port,
+      host,
+      path,
+      webhookPath: options?.webhookPath,
+      streamUrl: options?.streamUrl,
+      greeting: options?.greeting,
+      server: options?.server,
+    });
+
+    await this.listen({ port, host, path, server: options?.server });
+  }
+
+  /**
+   * Handle an existing WebSocket connection using the Twilio telephony pipeline.
+   * Ideal for integrating phone agents into an existing Express/Fastify/Next.js/Hono server.
+   */
+  handleTwilioWebSocket(ws: import("ws").WebSocket, req?: import("http").IncomingMessage): void {
+    if (!(this.transport instanceof TwilioTransport)) {
+      this.transport = new TwilioTransport();
+      this.transport.onConnect((session) => this.handleConnect(session));
+      this.transport.onDisconnect((session) => this.handleDisconnect(session));
+      this.transport.onAudioChunk((sessionId, chunk) =>
+        this.handleAudio(sessionId, chunk),
+      );
+    }
+    (this.transport as TwilioTransport).handleWebSocket(ws, req);
+  }
+
+  /**
+   * Generate standard TwiML XML connecting an incoming or outgoing Twilio call to a media stream.
+   */
+  createTwilioTwiML(options: TwilioStreamTwiMLOptions): string {
+    return createTwilioStreamTwiML(options);
   }
 
   /**
@@ -227,6 +312,8 @@ export class FelAgent extends EventEmitter {
         this.config.systemPrompt ??
         "You are a helpful, conversational AI voice assistant.",
       sendAudio: (chunk) => this.transport.sendAudio(session.id, chunk),
+      clearAudio: () =>
+        this.transport.clearAudio ? this.transport.clearAudio(session.id) : Promise.resolve(),
     });
 
     // Forward pipeline events

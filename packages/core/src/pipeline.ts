@@ -50,6 +50,8 @@ export class VoicePipeline extends EventEmitter {
 
   // Callback to send audio back to the client
   private sendAudioFn: ((chunk: AudioChunk) => Promise<void>) | null = null;
+  // Callback to clear queued audio on telephony (e.g. Twilio barge-in)
+  private clearAudioFn: (() => Promise<void>) | null = null;
 
   constructor(options: {
     sessionId: string;
@@ -64,6 +66,7 @@ export class VoicePipeline extends EventEmitter {
     hooks: AgentHooks;
     systemPrompt: string;
     sendAudio: (chunk: AudioChunk) => Promise<void>;
+    clearAudio?: () => Promise<void>;
   }) {
     super();
     this.sessionId = options.sessionId;
@@ -78,6 +81,7 @@ export class VoicePipeline extends EventEmitter {
     this.hooks = options.hooks;
     this.systemPrompt = options.systemPrompt;
     this.sendAudioFn = options.sendAudio;
+    this.clearAudioFn = options.clearAudio ?? null;
   }
 
   /**
@@ -306,6 +310,7 @@ export class VoicePipeline extends EventEmitter {
 
     this.logger.log("info", "Barge-in detected — stopping agent speech");
     this.isSpeaking = false;
+    this.clearAudioFn?.();
     this.hooks.onBargeIn?.(this.session);
     this.emit("bargeIn");
   }

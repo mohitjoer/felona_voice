@@ -7,6 +7,7 @@ import type {
   InteractResult,
   STTProvider,
   TTSProvider,
+  Transport,
 } from "./types.js";
 import type {
   GraphData,
@@ -27,6 +28,7 @@ export class AgentBuilder {
   private ttsConfig?: { provider: string; apiKey?: string; voice?: string; [k: string]: unknown } | TTSProvider;
   private customEmbeddingProvider?: EmbeddingProvider;
   private confidenceThreshold = 0.35;
+  private transportConfig?: ({ type?: "websocket" | "twilio" | "webrtc"; port?: number; host?: string; path?: string; streamUrl?: string; [k: string]: unknown } | Transport);
   private builtAgent?: FelAgent;
 
   constructor(name = "Felona Agent") {
@@ -259,6 +261,7 @@ export class AgentBuilder {
         embeddingProvider: this.customEmbeddingProvider,
         confidenceThreshold: this.confidenceThreshold,
       },
+      transport: this.transportConfig,
     });
 
     // Populate initial slots into agent memory
@@ -276,8 +279,61 @@ export class AgentBuilder {
   }
 
   /** Start listening on WebSocket port */
-  async listen(options?: { port?: number; host?: string }): Promise<void> {
+  async listen(options?: { port?: number; host?: string; path?: string }): Promise<void> {
     return this.build().listen(options);
+  }
+
+  /**
+   * Configure agent to connect with Twilio Media Streams and mobile phone carriers.
+   */
+  twilio(options?: {
+    port?: number;
+    host?: string;
+    path?: string;
+    webhookPath?: string | null;
+    streamUrl?: string;
+    greeting?: string;
+  }): this {
+    this.transportConfig = {
+      type: "twilio",
+      ...options,
+    };
+    return this;
+  }
+
+  /**
+   * Set custom Transport instance or transport options.
+   */
+  transport(
+    config:
+      | Transport
+      | {
+          type?: "websocket" | "twilio" | "webrtc";
+          port?: number;
+          host?: string;
+          path?: string;
+          streamUrl?: string;
+          [k: string]: unknown;
+        }
+  ): this {
+    this.transportConfig = config;
+    return this;
+  }
+
+  /**
+   * Start a dedicated Twilio Telephony media stream server directly from the builder.
+   */
+  async listenTwilio(options?: {
+    port?: number;
+    host?: string;
+    path?: string;
+    webhookPath?: string | null;
+    streamUrl?: string;
+    greeting?: string;
+  }): Promise<FelAgent> {
+    const agent = this.build();
+    await agent.listenTwilio(options);
+    return agent;
   }
 
   /**

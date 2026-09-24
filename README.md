@@ -161,19 +161,41 @@ Audio In → VAD → STT → JEV Decision → LLM Generate → TTS → Audio Out
 
 | Component | Providers |
 |-----------|-----------|
-| **STT** | Deepgram (streaming) |
-| **TTS** | ElevenLabs (streaming) |
+| **STT** | Deepgram (streaming), Whisper, AssemblyAI, Azure, Google |
+| **TTS** | ElevenLabs, Deepgram Aura, Cartesia Sonic, OpenAI, Azure, Polly, LMNT |
 | **LLM** | OpenAI |
 | **VAD** | Energy-based (zero-dependency) |
-| **Embeddings** | OpenAI text-embedding-3-small |
-| **Transport** | WebSocket |
+| **Embeddings** | OpenAI text-embedding-3-small, FastSemanticEmbedding |
+| **Transport** | WebSocket, Twilio Telephony (Media Streams) |
+| **Telephony** | Twilio, Telnyx (G.711 μ-law transcoding, TwiML auto-serve) |
 
 All providers implement pluggable interfaces — bring your own.
+
+## Telephony & Mobile Calling (Twilio)
+
+```typescript
+import { createAgent } from "felona-voice";
+
+const phoneAgent = createAgent("PhoneReceptionist")
+  .system("You are a friendly customer service phone receptionist.")
+  .action("hours", "Store opening and closing hours", "We are open Monday through Friday 9 AM to 6 PM.")
+  .fallback("How can I assist your call today?")
+  .twilio({
+    port: 8080,
+    greeting: "Thank you for calling. Connecting to customer service.",
+  });
+
+// Starts WebSocket stream at /media & auto-serves TwiML at /voice
+await phoneAgent.listenTwilio({ port: 8080 });
+```
+👉 See [Telephony & Twilio Guide](./docs/TELEPHONY_TWILIO_GUIDE.md) for full instructions, Express middleware integration, and outbound calling.
 
 ## Examples
 
 - [`basic-greeting`](./examples/basic-greeting/) — Simplest possible agent (3 actions)
 - [`customer-support`](./examples/customer-support/) — Multi-action agent with tool calling
+- [`voice-graph-flow`](./examples/voice-graph-flow/) — Stateful conversation graph flow example
+- [`twilio-phone-agent`](./examples/twilio-phone-agent/) — Live mobile phone agent with Twilio Media Streams
 
 ## Project Structure
 

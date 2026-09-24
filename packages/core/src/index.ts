@@ -80,6 +80,27 @@ export {
   createWebSocketTransport,
 } from "./transport/websocket.js";
 
+// ─── Telephony & Mobile Providers (Twilio, Telnyx) ──────────────────────────
+export {
+  TwilioTransport,
+  createTwilioTransport,
+  createTwilioStreamTwiML,
+  createTelnyxStreamTeXML,
+  makeTwilioCall,
+  mulawToPcm16,
+  pcm16ToMulaw,
+  resamplePcm16,
+  mulaw8kToPcm16k,
+  pcm16ToMulaw8k,
+  linearSampleToMulaw,
+} from "./telephony/index.js";
+export type {
+  TwilioTransportOptions,
+  TwilioStreamTwiMLOptions,
+  TwilioOutboundCallOptions,
+  TwilioCallResult,
+} from "./telephony/index.js";
+
 // ─── STT Providers ──────────────────────────────────────────────────────────
 export { DeepgramSTT, createDeepgramSTT } from "./stt/deepgram.js";
 export { WhisperSTT, createWhisperSTT, type WhisperSTTOptions } from "./stt/whisper.js";

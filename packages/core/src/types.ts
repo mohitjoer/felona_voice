@@ -129,11 +129,15 @@ export interface Transport {
   onDisconnect(handler: (session: Session) => void): void;
   /** Send audio to a specific session */
   sendAudio(sessionId: string, chunk: AudioChunk): Promise<void>;
+  /** Optional: clear queued audio on telephony/mobile buffer (e.g. Twilio barge-in) */
+  clearAudio?(sessionId: string): Promise<void>;
 }
 
 export interface TransportOptions {
   port: number;
   host?: string;
+  path?: string;
+  server?: import("http").Server | import("https").Server;
 }
 
 // ─── STT (Speech-to-Text) ──────────────────────────────────────────────────
@@ -366,12 +370,17 @@ export interface FelAgentConfig {
   /** Lifecycle hooks */
   hooks?: AgentHooks;
 
-  /** Transport config */
-  transport?: {
-    type?: "websocket" | "webrtc";
-    port?: number;
-    host?: string;
-  };
+  /** Transport config or custom Transport instance */
+  transport?:
+    | {
+        type?: "websocket" | "twilio" | "webrtc";
+        port?: number;
+        host?: string;
+        path?: string;
+        streamUrl?: string;
+        [key: string]: unknown;
+      }
+    | Transport;
 
   /** Logging configuration */
   logging?: {
