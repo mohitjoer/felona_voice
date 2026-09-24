@@ -8,6 +8,8 @@ import type {
   STTProvider,
   TTSProvider,
   Transport,
+  SessionManagerOptions,
+  SessionStore,
 } from "./types.js";
 import type {
   GraphData,
@@ -29,6 +31,7 @@ export class AgentBuilder {
   private customEmbeddingProvider?: EmbeddingProvider;
   private confidenceThreshold = 0.35;
   private transportConfig?: ({ type?: "websocket" | "twilio" | "webrtc"; port?: number; host?: string; path?: string; streamUrl?: string; [k: string]: unknown } | Transport);
+  private sessionConfig?: SessionManagerOptions;
   private builtAgent?: FelAgent;
 
   constructor(name = "Felona Agent") {
@@ -262,6 +265,7 @@ export class AgentBuilder {
         confidenceThreshold: this.confidenceThreshold,
       },
       transport: this.transportConfig,
+      sessions: this.sessionConfig,
     });
 
     // Populate initial slots into agent memory
@@ -317,6 +321,32 @@ export class AgentBuilder {
         }
   ): this {
     this.transportConfig = config;
+    return this;
+  }
+
+  /**
+   * Configure session concurrency, TTL, and scaling.
+   * By default, sessions remain ephemeral in memory during the active call only.
+   * If you provide an external store/database (e.g. Redis), session history is persisted.
+   */
+  sessions(config: SessionManagerOptions): this {
+    this.sessionConfig = { ...this.sessionConfig, ...config };
+    return this;
+  }
+
+  /**
+   * Limit maximum concurrent active calls/sessions to scale and prevent node overload.
+   */
+  maxConcurrent(limit: number): this {
+    this.sessionConfig = { ...this.sessionConfig, maxConcurrent: limit };
+    return this;
+  }
+
+  /**
+   * Attach an external database or key-value store for session persistence.
+   */
+  sessionStore(store: SessionStore): this {
+    this.sessionConfig = { ...this.sessionConfig, store };
     return this;
   }
 

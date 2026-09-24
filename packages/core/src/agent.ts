@@ -16,6 +16,7 @@ import type {
 import { WebSocketTransport } from "./transport/websocket.js";
 import { TwilioTransport } from "./telephony/twilio-transport.js";
 import { createTwilioStreamTwiML, type TwilioStreamTwiMLOptions } from "./telephony/twiml.js";
+import { SessionManager, createSessionManager } from "./session/index.js";
 import { JEVEngine } from "./jev/engine.js";
 import { OpenAIEmbeddingProvider } from "./jev/embeddings.js";
 import { FastSemanticEmbeddingProvider } from "./jev/fast-embeddings.js";
@@ -80,6 +81,9 @@ export class FelAgent extends EventEmitter {
   private readonly ttsProvider: TTSProvider;
   private readonly vadProvider: EnergyVAD;
 
+  /** Session manager for scaling, multi-turn state persistence, and concurrency limits */
+  public readonly sessions: SessionManager;
+
   // Active pipelines (one per session)
   private pipelines: Map<string, VoicePipeline> = new Map();
   // Session tracking for direct interactions
@@ -92,11 +96,11 @@ export class FelAgent extends EventEmitter {
     this.config = config;
     this.hooks = config.hooks ?? {};
 
-    // Initialize logger
+    // Initialize logger (only writes to disk if logDir is explicitly provided by user)
     this.logger = new CallLogger({
       logDir: config.logging?.logDir,
       level: config.logging?.level,
-      enabled: config.logging?.enabled ?? true,
+      enabled: config.logging?.enabled ?? Boolean(config.logging?.logDir),
     });
 
     // Initialize tools
@@ -129,6 +133,14 @@ export class FelAgent extends EventEmitter {
       embeddingProvider,
       confidenceThreshold: config.jev?.confidenceThreshold ?? 0.35,
     });
+
+    // Initialize session manager
+    this.sessions = createSessionManager(config.sessions);
+    this.sessions.on("sessionCreated", (s) => this.emit("sessionCreated", s));
+    this.sessions.on("sessionEnded", (s) => this.emit("sessionEnded", s));
+    this.sessions.on("concurrencyLimitReached", (active, max) =>
+      this.emit("concurrencyLimitReached", { active, max })
+    );
 
     // Initialize transport
     if (config.transport && typeof (config.transport as Transport).start === "function") {
@@ -279,6 +291,9 @@ export class FelAgent extends EventEmitter {
     // Stop transport
     await this.transport.stop();
 
+    // Close session manager
+    await this.sessions.close();
+
     this.initialized = false;
     this.logger.log("info", "Agent stopped");
     this.emit("stopped");
@@ -289,6 +304,25 @@ export class FelAgent extends EventEmitter {
    */
   private async handleConnect(session: Session): Promise<void> {
     this.logger.log("info", `New call: ${session.id}`);
+
+    // Check concurrency limit before accepting new session
+    if (!(await this.sessions.canAcceptSession())) {
+      const stats = await this.sessions.getStats();
+      this.logger.log(
+        "warn",
+        `Session concurrency limit reached (${stats.activeCount}/${stats.maxConcurrent}). Cannot accept call: ${session.id}`
+      );
+      this.emit("concurrencyLimitReached", stats);
+      session.state = "ended";
+      return;
+    }
+
+    // Register session with SessionManager
+    await this.sessions.createSession({
+      id: session.id,
+      metadata: session.metadata,
+      ttlMs: this.config.sessions?.ttlMs,
+    });
 
     // Create per-session memory
     const memory = new ConversationMemory();
@@ -314,6 +348,7 @@ export class FelAgent extends EventEmitter {
       sendAudio: (chunk) => this.transport.sendAudio(session.id, chunk),
       clearAudio: () =>
         this.transport.clearAudio ? this.transport.clearAudio(session.id) : Promise.resolve(),
+      sessionManager: this.sessions,
     });
 
     // Forward pipeline events
@@ -344,6 +379,9 @@ export class FelAgent extends EventEmitter {
       await pipeline.stop();
       this.pipelines.delete(session.id);
     }
+
+    // Mark session as ended in session manager
+    await this.sessions.endSession(session.id);
 
     this.emit("callEnded", session);
   }

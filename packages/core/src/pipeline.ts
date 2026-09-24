@@ -52,6 +52,7 @@ export class VoicePipeline extends EventEmitter {
   private sendAudioFn: ((chunk: AudioChunk) => Promise<void>) | null = null;
   // Callback to clear queued audio on telephony (e.g. Twilio barge-in)
   private clearAudioFn: (() => Promise<void>) | null = null;
+  private sessionManager: any = null;
 
   constructor(options: {
     sessionId: string;
@@ -67,6 +68,7 @@ export class VoicePipeline extends EventEmitter {
     systemPrompt: string;
     sendAudio: (chunk: AudioChunk) => Promise<void>;
     clearAudio?: () => Promise<void>;
+    sessionManager?: any;
   }) {
     super();
     this.sessionId = options.sessionId;
@@ -82,6 +84,7 @@ export class VoicePipeline extends EventEmitter {
     this.systemPrompt = options.systemPrompt;
     this.sendAudioFn = options.sendAudio;
     this.clearAudioFn = options.clearAudio ?? null;
+    this.sessionManager = options.sessionManager ?? null;
   }
 
   /**
@@ -198,12 +201,14 @@ export class VoicePipeline extends EventEmitter {
     this.currentTranscript = "";
 
     try {
-      // Add user turn to memory
-      this.memory.addTurn({
-        role: "user",
+      // Add user turn to memory and session store
+      const userTurn = {
+        role: "user" as const,
         content: userText,
         timestampMs: Date.now() - this.session.startedAt.getTime(),
-      });
+      };
+      this.memory.addTurn(userTurn);
+      this.sessionManager?.addTurn(this.sessionId, userTurn);
 
       // Notify hooks
       await this.hooks.onUserSpoke?.(userText, this.session);
@@ -246,18 +251,22 @@ export class VoicePipeline extends EventEmitter {
         tools: this.tools,
         memory: this.memory,
         session: this.session,
+        sessions: this.sessionManager,
       };
 
       const responseText = await match.action.handler(actionContext);
 
-      // Add agent turn to memory
-      this.memory.addTurn({
-        role: "agent",
+      // Add agent turn to memory and session store
+      const agentTurn = {
+        role: "agent" as const,
         content: responseText,
         timestampMs: Date.now() - this.session.startedAt.getTime(),
         actionId: match.action.id,
         confidence: match.confidence,
-      });
+      };
+      this.memory.addTurn(agentTurn);
+      this.sessionManager?.addTurn(this.sessionId, agentTurn);
+      this.sessionManager?.touch(this.sessionId);
 
       // Notify hooks
       await this.hooks.onAgentSpoke?.(responseText, this.session);

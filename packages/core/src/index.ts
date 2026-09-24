@@ -137,6 +137,20 @@ export type {
   CallLogFile,
 } from "./analytics/logger.js";
 
+// ─── Sessions & Scaling ─────────────────────────────────────────────────────
+export {
+  SessionManager,
+  createSessionManager,
+  MemorySessionStore,
+  createMemorySessionStore,
+} from "./session/index.js";
+export type {
+  SessionRecord,
+  SessionStore,
+  SessionManagerOptions,
+  SessionStats,
+} from "./types.js";
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 export type {
   // Audio

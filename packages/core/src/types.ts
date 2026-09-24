@@ -44,6 +44,64 @@ export interface Session {
 
 export type SessionState = "connecting" | "active" | "paused" | "ended";
 
+/** Complete session record persisted in the SessionStore */
+export interface SessionRecord {
+  /** Unique session ID (e.g. streamSid or UUID) */
+  id: string;
+  /** When session was created (epoch ms) */
+  createdAt: number;
+  /** Last activity timestamp (epoch ms) */
+  lastActiveAt: number;
+  /** Current state */
+  state: SessionState;
+  /** Custom metadata (telephony details, headers, caller IDs, etc.) */
+  metadata: Record<string, unknown>;
+  /** Memory slots / state values attached to this session */
+  slots: Record<string, unknown>;
+  /** Conversation history turns */
+  turns: ConversationTurn[];
+  /** Optional TTL in milliseconds */
+  ttlMs?: number;
+}
+
+/** Interface for pluggable Session Stores (Memory, Redis, DynamoDB, etc.) */
+export interface SessionStore {
+  /** Retrieve a session record by ID */
+  get(id: string): Promise<SessionRecord | null>;
+  /** Persist or update a session record */
+  set(id: string, record: SessionRecord): Promise<void>;
+  /** Delete a session record */
+  delete(id: string): Promise<boolean>;
+  /** Touch a session to update its lastActiveAt timestamp */
+  touch(id: string): Promise<void>;
+  /** List session records with optional filter */
+  list(filter?: { state?: SessionState }): Promise<SessionRecord[]>;
+  /** Clear all records */
+  clear(): Promise<void>;
+  /** Close / disconnect store */
+  close?(): Promise<void>;
+}
+
+/** Configuration options for session management */
+export interface SessionManagerOptions {
+  /** Pluggable store instance (defaults to MemorySessionStore) */
+  store?: SessionStore;
+  /** Maximum concurrent active sessions (useful for scaling & rate limits) */
+  maxConcurrent?: number;
+  /** Session inactivity timeout / TTL in milliseconds (default: 30 minutes) */
+  ttlMs?: number;
+  /** Cleanup check interval for expired sessions in milliseconds (default: 60s) */
+  cleanupIntervalMs?: number;
+}
+
+/** Session statistics for monitoring & health checks */
+export interface SessionStats {
+  activeCount: number;
+  totalCreated: number;
+  maxConcurrent: number;
+  totalExpired: number;
+}
+
 // ─── Conversation ───────────────────────────────────────────────────────────
 
 /** A single turn in the conversation */
@@ -101,6 +159,8 @@ export interface ActionContext {
   memory: MemoryManager;
   /** The current session */
   session: Session;
+  /** Session manager for multi-turn slot persistence & scaling */
+  sessions?: any;
 }
 
 /** Result of JEV action matching */
@@ -381,6 +441,9 @@ export interface FelAgentConfig {
         [key: string]: unknown;
       }
     | Transport;
+
+  /** Session management and horizontal scaling configuration */
+  sessions?: SessionManagerOptions;
 
   /** Logging configuration */
   logging?: {

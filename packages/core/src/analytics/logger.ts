@@ -23,17 +23,18 @@ export class CallLogger {
     level?: "debug" | "info" | "warn" | "error";
     enabled?: boolean;
   }) {
-    this.logDir = options?.logDir ?? "./call-logs";
+    this.logDir = options?.logDir ?? "";
     this.level = options?.level ?? "info";
-    this.enabled = options?.enabled ?? true;
+    // Never persist call logs to disk unless user explicitly provided a log directory
+    this.enabled = options?.enabled !== undefined ? options.enabled : Boolean(options?.logDir);
   }
 
   /**
    * Log a complete call session.
-   * This is called when a call ends.
+   * Only saves to disk if the user explicitly provided a logDir location.
    */
   async logCall(data: CallLogEntry): Promise<string | null> {
-    if (!this.enabled) return null;
+    if (!this.enabled || !this.logDir) return null;
 
     await mkdir(this.logDir, { recursive: true });
 
