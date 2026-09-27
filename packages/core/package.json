@@ -1,6 +1,6 @@
 {
   "name": "felona-voice",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Voice agent framework powered by JEV (Joint Embedding Vectors) for dynamic conversation flow",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
