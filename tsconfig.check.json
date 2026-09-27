@@ -1,0 +1,13 @@
+{
+  "//": "Non-composite, no-emit typecheck across every package. The root tsconfig.json uses project references with `files: []`, so `tsc --noEmit -p tsconfig.json` validates only the reference graph and checks no source at all. This config is what `npm run typecheck` must use.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["packages/*/src/**/*.ts"],
+  "exclude": ["node_modules", "packages/*/dist"]
+}

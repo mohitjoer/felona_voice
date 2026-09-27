@@ -24,16 +24,53 @@ export class ActionSpace {
   /**
    * Initialize the action space — embeds all action descriptions.
    * Must be called before any matching.
+   *
+   * Action IDs must be unique: embeddings are keyed by ID, so a duplicate would
+   * silently overwrite one entry and leave the corresponding action permanently
+   * unreachable (it would still be scored, against the other action's vector).
    */
   async initialize(actions: AgentAction[]): Promise<void> {
+    if (actions.length === 0) {
+      throw new Error("ActionSpace requires at least one action");
+    }
+
+    const seen = new Set<string>();
+    for (const action of actions) {
+      if (!action.id || typeof action.id !== "string") {
+        throw new Error("Every action requires a non-empty string id");
+      }
+      if (seen.has(action.id)) {
+        throw new Error(
+          `Duplicate action id "${action.id}". Action ids must be unique — ` +
+            "duplicated ids collapse into a single embedding and one action " +
+            "becomes unroutable.",
+        );
+      }
+      if (!action.description || !action.description.trim()) {
+        throw new Error(
+          `Action "${action.id}" requires a non-empty description — it is what JEV embeds to route to this action.`,
+        );
+      }
+      seen.add(action.id);
+    }
+
     this.actions = actions;
+    // Drop embeddings for actions that no longer exist, so re-initializing
+    // with a smaller action set does not leave stale vectors behind.
+    this.embeddings.clear();
 
     // Batch embed all action descriptions
     const descriptions = actions.map((a) => a.description);
     const vectors = await this.embeddingProvider.embedBatch(descriptions);
 
     for (let i = 0; i < actions.length; i++) {
-      this.embeddings.set(actions[i].id, vectors[i]);
+      const vector = vectors[i];
+      if (!vector) {
+        throw new Error(
+          `Embedding provider "${this.embeddingProvider.name}" returned no vector for action "${actions[i].id}"`,
+        );
+      }
+      this.embeddings.set(actions[i].id, vector);
     }
   }
 

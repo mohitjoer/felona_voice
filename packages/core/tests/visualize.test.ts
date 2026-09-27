@@ -65,7 +65,7 @@ describe("Graph Visualization Tools", () => {
       .setEntryPoint("greet");
 
     const mermaid = workflow.drawMermaid();
-    expect(mermaid).toContain("graph TD");
+    expect(mermaid).toContain("flowchart TD");
     expect(mermaid).toContain("START((START)):::startNode --> greet");
     expect(mermaid).toContain("greet --> shipping");
 
@@ -100,7 +100,7 @@ describe("Graph Visualization Tools", () => {
     });
 
     expect(result.ascii).toContain("greet");
-    expect(result.mermaid).toContain("graph TD");
+    expect(result.mermaid).toContain("flowchart TD");
     expect(result.url).toContain("https://mermaid.live");
     expect(result.html).toContain("<!DOCTYPE html>");
   });
@@ -134,7 +134,7 @@ describe("Graph Visualization Tools", () => {
     const ascii = agent.drawAscii();
     expect(ascii).toContain("order_status");
     expect(ascii).toContain("fallback");
-    expect(agent.drawMermaid()).toContain("graph TD");
+    expect(agent.drawMermaid()).toContain("flowchart TD");
     expect(agent.drawMarkdown()).toContain("# 🎙️ Acme Support");
   });
 });

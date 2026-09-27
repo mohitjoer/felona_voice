@@ -3,10 +3,81 @@ import type { EmbeddingProvider } from "../types.js";
 /**
  * FastSemanticEmbeddingProvider
  *
- * A deterministic high-dimensional semantic vector generator (128-d)
- * optimized for real-time JEV action space routing without requiring external API keys.
- * Uses token n-grams, subword kernels, and categorical domain projection.
+ * A deterministic, dependency-free semantic vector generator (128-d) for
+ * real-time JEV action-space routing. No API key, no model download.
+ *
+ * The vector is the weighted sum of three independently L2-normalized signals:
+ *
+ * | Signal        | Weight | Purpose                                              |
+ * |---------------|--------|------------------------------------------------------|
+ * | Keyword       | 0.62   | Domain anchors — the actual routing signal             |
+ * | Char 3-grams  | 0.23   | Morphological variants ("track"/"tracking"/"tracked")   |
+ * | Word hashes   | 0.15   | Disambiguation of otherwise unknown words              |
+ *
+ * Normalizing each signal *before* mixing is what keeps long utterances from
+ * drowning the keywords: accumulating raw gram counts made a 15-word sentence
+ * contribute ~30 units of hashed noise against ~3.5 units of keyword signal,
+ * so routing degraded exactly as user speech got more natural.
  */
+
+/** Very common English function words — no routing signal, only noise. */
+const STOPWORDS = new Set([
+  "a", "about", "after", "all", "also", "am", "an", "and", "any", "are", "as",
+  "at", "be", "because", "been", "before", "being", "but", "by", "can", "could",
+  "did", "do", "does", "doing", "for", "from", "had", "has", "have", "he",
+  "her", "here", "hers", "him", "his", "how", "i", "if", "in", "into", "is",
+  "it", "its", "just", "me", "more", "most", "my", "no", "nor", "not", "of",
+  "off", "on", "once", "only", "or", "other", "our", "out", "over", "own",
+  "same", "she", "should", "so", "some", "such", "than", "that", "the", "their",
+  "them", "then", "there", "these", "they", "this", "those", "to", "too", "under",
+  "until", "up", "very", "was", "we", "were", "what", "when", "where", "which",
+  "while", "who", "whom", "why", "will", "with", "would", "you", "your",
+]);
+
+const KEYWORD_WEIGHT = 0.62;
+const GRAM_WEIGHT = 0.23;
+const WORD_WEIGHT = 0.15;
+
+/**
+ * Crude but effective suffix stripping.
+ *
+ * Only used as a *fallback*: the raw token is looked up first, so inflected
+ * forms that are themselves anchors ("shattered") still match.
+ */
+function stem(token: string): string {
+  if (token.length <= 3) return token;
+  for (const suffix of ["ingly", "edly", "ing", "ies", "ied", "ed", "es", "s"]) {
+    if (token.length > suffix.length + 2 && token.endsWith(suffix)) {
+      let base = token.slice(0, -suffix.length);
+      if (suffix === "ies" || suffix === "ied") base += "y";
+      // Undo doubled consonants: "shipp" -> "ship"
+      if (base.length > 3 && base[base.length - 1] === base[base.length - 2]) {
+        base = base.slice(0, -1);
+      }
+      return base;
+    }
+  }
+  return token;
+}
+
+/** Deterministic non-negative bucket index for a fixed vector width. */
+function hashBucket(value: string, dimensions: number): number {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i++) {
+    hash = (hash * 33) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0) % dimensions;
+}
+
+/** In-place L2 normalization. A zero vector is left alone. */
+function normalize(vec: Float64Array): void {
+  let sumSq = 0;
+  for (let i = 0; i < vec.length; i++) sumSq += vec[i] * vec[i];
+  const norm = Math.sqrt(sumSq);
+  if (norm === 0) return;
+  for (let i = 0; i < vec.length; i++) vec[i] /= norm;
+}
+
 export class FastSemanticEmbeddingProvider implements EmbeddingProvider {
   readonly name = "fast-semantic";
   readonly dimensions = 128;
@@ -78,6 +149,11 @@ export class FastSemanticEmbeddingProvider implements EmbeddingProvider {
     manager: [40, 41, 42],
     supervisor: [40, 41, 43],
     human: [41, 42, 44],
+    someone: [41, 42, 44],
+    somebody: [41, 42, 44],
+    anybody: [41, 42, 44],
+    operator: [40, 41, 45],
+    agent: [40, 41, 45],
     person: [41, 42, 44],
     unacceptable: [42, 43, 45],
     angry: [42, 43, 46],
@@ -102,6 +178,7 @@ export class FastSemanticEmbeddingProvider implements EmbeddingProvider {
 
     // Sales & SDR
     pricing: [60, 61, 62],
+    price: [60, 61, 62],
     cost: [60, 61, 63],
     budget: [61, 62, 64],
     expensive: [61, 63, 64],
@@ -116,6 +193,16 @@ export class FastSemanticEmbeddingProvider implements EmbeddingProvider {
     volume: [71, 74, 75],
     remove: [76, 77, 78],
     interested: [76, 78, 79],
+
+    // Common intents
+    question: [3, 4, 20],
+    problem: [20, 21, 27],
+    issue: [20, 21, 27],
+    need: [3, 4, 76],
+    want: [76, 78, 79],
+    call: [40, 44, 45],
+    wait: [40, 44, 45],
+    book: [65, 67, 69],
 
     // Clinic & Healthcare
     doctor: [80, 81, 82],
@@ -154,60 +241,60 @@ export class FastSemanticEmbeddingProvider implements EmbeddingProvider {
   };
 
   async embed(text: string): Promise<Float64Array> {
-    const vec = new Float64Array(this.dimensions);
     const cleaned = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
-    const tokens = cleaned.split(/\s+/).filter(Boolean);
+    const rawTokens = cleaned.split(/\s+/).filter(Boolean);
 
+    const tokens = rawTokens.filter((t) => !STOPWORDS.has(t));
     if (tokens.length === 0) {
-      for (let i = 0; i < this.dimensions; i++) vec[i] = 1 / Math.sqrt(this.dimensions);
-      return vec;
+      const uniform = new Float64Array(this.dimensions);
+      uniform.fill(1 / Math.sqrt(this.dimensions));
+      return uniform;
     }
 
-    // 1. Semantic keyword anchors
+    const keywordVec = new Float64Array(this.dimensions);
+    const gramVec = new Float64Array(this.dimensions);
+    const wordVec = new Float64Array(this.dimensions);
+
+    // 1. Semantic keyword anchors — exact form first, then the stem, so that
+    //    "shattered" matches directly while "shattering" resolves via stem.
     for (const token of tokens) {
-      const match = this.semanticKeywords[token];
-      if (match) {
-        for (const idx of match) {
-          if (idx < this.dimensions) {
-            vec[idx] += 3.5;
-          }
-        }
+      const exact = this.semanticKeywords[token];
+      const stemmed = exact ? undefined : this.semanticKeywords[stem(token)];
+      const anchors = exact ?? stemmed;
+      if (!anchors) continue;
+      for (const idx of anchors) {
+        if (idx < this.dimensions) keywordVec[idx] += 1;
       }
     }
 
-    // 2. Subword character 3-grams hashing
-    for (let i = 0; i < cleaned.length - 2; i++) {
-      const tri = cleaned.substring(i, i + 3);
-      let hash = 0;
-      for (let j = 0; j < tri.length; j++) {
-        hash = (hash << 5) - hash + tri.charCodeAt(j);
-        hash |= 0;
-      }
-      const dim = Math.abs(hash) % this.dimensions;
-      vec[dim] += 0.45;
+    // 2. Character 3-gram hashing — catches morphological variants the keyword
+    //    table misses without needing a dictionary.
+    const joined = tokens.join(" ");
+    for (let i = 0; i < joined.length - 2; i++) {
+      gramVec[hashBucket(joined.substring(i, i + 3), this.dimensions)] += 1;
     }
 
-    // 3. Word-level hashing
+    // 3. Word-level hashing — separates words that share character grams.
     for (const token of tokens) {
-      let hash = 5381;
-      for (let i = 0; i < token.length; i++) {
-        hash = (hash * 33) ^ token.charCodeAt(i);
-      }
-      const dim = Math.abs(hash) % this.dimensions;
-      vec[dim] += 0.8;
+      wordVec[hashBucket(token, this.dimensions)] += 1;
     }
 
-    // 4. L2 Normalization to unit sphere
-    let sumSq = 0;
-    for (let i = 0; i < this.dimensions; i++) {
-      sumSq += vec[i] * vec[i];
-    }
-    const norm = Math.sqrt(sumSq) || 1;
-    for (let i = 0; i < this.dimensions; i++) {
-      vec[i] /= norm;
-    }
+    // 4. Normalize each signal on its own, then mix. Scale-invariant, so a long
+    //    utterance cannot out-shout a short one that happens to be on-topic.
+    normalize(keywordVec);
+    normalize(gramVec);
+    normalize(wordVec);
 
-    return vec;
+    const out = new Float64Array(this.dimensions);
+    for (let i = 0; i < this.dimensions; i++) {
+      out[i] =
+        KEYWORD_WEIGHT * keywordVec[i] +
+        GRAM_WEIGHT * gramVec[i] +
+        WORD_WEIGHT * wordVec[i];
+    }
+    normalize(out);
+
+    return out;
   }
 
   async embedBatch(texts: string[]): Promise<Float64Array[]> {

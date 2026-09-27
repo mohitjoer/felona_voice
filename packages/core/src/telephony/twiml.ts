@@ -43,6 +43,13 @@ export interface TwilioStreamTwiMLOptions {
    * Stream direction: "inbound_track", "outbound_track", or "both_tracks" (default: "inbound_track").
    */
   track?: "inbound_track" | "outbound_track" | "both_tracks";
+
+  /**
+   * G.711 encoding for the media stream: `"mulaw"` (PCMU, Twilio's default) or
+   * `"alaw"` (PCMA). Twilio will not send the other format, so this must match
+   * what the transport is prepared to decode.
+   */
+  encoding?: "mulaw" | "alaw";
 }
 
 /**
@@ -59,8 +66,9 @@ export function createTwilioStreamTwiML(options: TwilioStreamTwiMLOptions): stri
 
   const trackAttr = options.track ? ` track="${escapeXml(options.track)}"` : "";
   const statusAttr = options.statusCallback ? ` statusCallback="${escapeXml(options.statusCallback)}"` : "";
+  const encodingAttr = options.encoding ? ` encoding="${escapeXml(options.encoding)}"` : "";
 
-  xml += `  <Connect${statusAttr}>\n    <Stream url="${escapeXml(options.streamUrl)}"${trackAttr}>\n`;
+  xml += `  <Connect${statusAttr}>\n    <Stream url="${escapeXml(options.streamUrl)}"${trackAttr}${encodingAttr}>\n`;
 
   if (options.customParameters) {
     for (const [key, value] of Object.entries(options.customParameters)) {

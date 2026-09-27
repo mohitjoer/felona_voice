@@ -11,7 +11,6 @@
  *   name: "My Agent",
  *   systemPrompt: "You are helpful.",
  *   stt: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY },
- *   stt: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY },
  *   tts: { provider: "deepgram", apiKey: process.env.DEEPGRAM_API_KEY, voice: "aura-asteria-en" },
  *   actions: [
  *     defineAction({
@@ -78,7 +77,26 @@ export { VoicePipeline, createPipeline } from "./pipeline.js";
 export {
   WebSocketTransport,
   createWebSocketTransport,
+  type WebSocketTransportOptions,
 } from "./transport/websocket.js";
+export {
+  WebRTCTransport,
+  createWebRTCTransport,
+  type WebRTCTransportOptions,
+  type PeerConnectionFactory,
+  type PeerConnectionLike,
+  type MediaTrackLike,
+} from "./transport/webrtc.js";
+export {
+  PcmuPacketizer,
+  serializeRtpAudioPacket,
+  parseRtpAudioPacket,
+  randomSsrc,
+  PCMU_PAYLOAD_TYPE,
+  PCMU_CLOCK_RATE,
+  SAMPLES_PER_FRAME,
+  type RtpAudioPacket,
+} from "./transport/rtp.js";
 
 // ─── Telephony & Mobile Providers (Twilio, Telnyx) ──────────────────────────
 export {
@@ -89,16 +107,33 @@ export {
   makeTwilioCall,
   mulawToPcm16,
   pcm16ToMulaw,
+  alawToPcm16,
+  pcm16ToAlaw,
   resamplePcm16,
   mulaw8kToPcm16k,
+  alaw8kToPcm16k,
   pcm16ToMulaw8k,
+  pcm16ToAlaw8k,
   linearSampleToMulaw,
+  linearSampleToAlaw,
+  decodeTelephonyAudio,
+  encodeTelephonyAudio,
+  buildTransferTwiml,
+  TwilioTransferProvider,
+  createTwilioTransferProvider,
+  PIPELINE_SAMPLE_RATE,
 } from "./telephony/index.js";
 export type {
   TwilioTransportOptions,
   TwilioStreamTwiMLOptions,
   TwilioOutboundCallOptions,
   TwilioCallResult,
+  TwilioTransferOptions,
+  G711Encoding,
+  TransferMode,
+  TransferRequest,
+  TransferResult,
+  CallTransferProvider,
 } from "./telephony/index.js";
 
 // ─── STT Providers ──────────────────────────────────────────────────────────
@@ -121,21 +156,190 @@ export { LMNTTTS, createLMNTTTS, type LMNTTTSOptions } from "./tts/lmnt.js";
 // ─── VAD Providers ──────────────────────────────────────────────────────────
 export { EnergyVAD, createEnergyVAD } from "./vad/energy.js";
 
+// ─── Audio Processing ───────────────────────────────────────────────────────
+export {
+  AudioPreprocessor,
+  createAudioPreprocessor,
+  type AudioPreprocessorOptions,
+} from "./audio/preprocess.js";
+export {
+  DTMFCollector,
+  createDTMFCollector,
+  type DTMFOptions,
+  type DTMFEntry,
+} from "./audio/dtmf.js";
+
+
+// ─── Supervision (listen in, coach, take over) ─────────────────────────────
+export {
+  CallSupervisor,
+  createCallSupervisor,
+  type SupervisorHandle,
+  type SupervisionState,
+  type SupervisionEvent,
+  type TakeoverOptions,
+} from "./supervision/controller.js";
+
+// ─── Knowledge Base ────────────────────────────────────────────────────────
+export {
+  KnowledgeBase,
+  createKnowledgeBase,
+  type KnowledgeBaseOptions,
+  type KnowledgeDocument,
+  type KnowledgeChunk,
+  type KnowledgeSearchOptions,
+  type KnowledgeSearcher,
+} from "./knowledge/kb.js";
+export {
+  chunkText,
+  chunkDocument,
+  splitSentences,
+  type ChunkOptions,
+} from "./knowledge/chunk.js";
+export {
+  createKnowledgeTask,
+  defaultKnowledgeAnswer,
+  type KnowledgeTaskOptions,
+} from "./knowledge/task.js";
+
+// ─── Language / i18n ────────────────────────────────────────────────────────
+export {
+  LANGUAGES,
+  getLanguage,
+  describeLanguage,
+  detectLanguage,
+  normalizeLanguage,
+  type LanguageDefinition,
+} from "./i18n/language.js";
+
+// ─── Slot Extraction & Prebuilt Tasks ────────────────────────────────────────
+export {
+  SlotCollector,
+  createSlotCollector,
+  type SlotDefinition,
+  type SlotRecord,
+  type IngestResult,
+} from "./slots/collector.js";
+export {
+  createCollectTask,
+  continueCollectTask,
+  getTaskCollector,
+  resetTaskCollector,
+  getNameTask,
+  getEmailTask,
+  getPhoneNumberTask,
+  getAddressTask,
+  getDateOfBirthTask,
+  getZipCodeTask,
+  getCreditCardTask,
+  type CollectTaskOptions,
+} from "./slots/tasks.js";
+export {
+  EXTRACTORS,
+  VALIDATORS,
+  DEFAULT_PROMPTS,
+  extractEmail,
+  extractPhone,
+  extractCardNumber,
+  extractExpiry,
+  extractCvv,
+  extractZip,
+  extractName,
+  extractAddress,
+  extractNumber,
+  extractDate,
+  extractString,
+  validateEmail,
+  validatePhone,
+  validateCardNumber,
+  validateExpiry,
+  validateCvv,
+  validateZip,
+  validateName,
+  validateAddress,
+  validateNumber,
+  validateDate,
+  luhnValid,
+  stripCorrection,
+  type SlotType,
+  type ExtractionResult,
+  type ValidationResult,
+} from "./slots/extractors.js";
+export {
+  spokenDigitsToLiteral,
+  spokenSymbolsToLiteral,
+  normalizeSpoken,
+  extractDigits,
+  stripFillers,
+  tokenize,
+} from "./slots/spoken.js";
+
+// ─── Scenario Testing ───────────────────────────────────────────────────────
+export {
+  runScenario,
+  runScenarios,
+  formatScenarioReport,
+  type Scenario,
+  type ScenarioTurn,
+  type ScenarioResult,
+  type ScenarioReport,
+  type TurnExpectations,
+  type TurnResult,
+  type RunScenariosOptions,
+} from "./testing/scenarios.js";
 
 // ─── Memory ─────────────────────────────────────────────────────────────────
 export { ConversationMemory, createMemory } from "./memory/context.js";
 
 // ─── Tools ──────────────────────────────────────────────────────────────────
 export { ToolRegistry, defineTool, createToolRegistry } from "./tools/registry.js";
+export {
+  McpClient,
+  StdioMcpTransport,
+  createMcpClient,
+  createStdioMcpTransport,
+  collectMcpTools,
+  extractMcpText,
+  MCP_PROTOCOL_VERSION,
+  type McpClientOptions,
+  type McpServerOptions,
+  type McpStdioTransportOptions,
+  type McpToolDescriptor,
+  type McpToolResult,
+  type McpTransport,
+} from "./tools/mcp.js";
 
 // ─── Analytics ──────────────────────────────────────────────────────────────
 export { CallLogger, createCallLogger } from "./analytics/logger.js";
+export {
+  analyzeCall,
+  analyzeSentiment,
+  analyzeConfidence,
+  type CallAnalysis,
+  type SentimentScore,
+  type ConfidenceProfile,
+  type AnalyzeOptions,
+  type Sentiment,
+} from "./analytics/call-analysis.js";
 export type {
   CallLogEntry,
   JEVDecisionLog,
   CallMetrics,
   CallLogFile,
 } from "./analytics/logger.js";
+
+// ─── Observability ──────────────────────────────────────────────────────────
+export {
+  FelonaTracer,
+  createFelonaTracer,
+  contentFingerprint,
+  formatTraceContext,
+  SPAN,
+  TRACER_NAME,
+  TRACER_VERSION,
+  type FelonaTracerOptions,
+  type SpanName,
+} from "./observability/tracing.js";
 
 // ─── Sessions & Scaling ─────────────────────────────────────────────────────
 export {
@@ -180,6 +384,14 @@ export type {
   VADProvider,
   VADResult,
   VADEvent,
+  // Turn handling
+  TurnDetectionMode,
+  EndpointingOptions,
+  InterruptionOptions,
+  PreemptiveOptions,
+  AudioOptions,
+  DTMFConfig,
+  DTMFEvent,
   // Tools
   AgentTool,
   ToolExecutor,

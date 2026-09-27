@@ -17,17 +17,19 @@
 
 **Open-source, ultra-low-latency voice agent framework powered by JEV (Joint Embedding Vectors) with stateful conversational graphs.**
 
-Build conversational voice agents that decide what to do next with sub-10ms neural routing — combined with stateful transition graphs, pluggable audio pipelines, and automatic Markdown visualization.
+Build conversational voice agents that decide what to do next with in-process vector routing — combined with stateful transition graphs, pluggable audio pipelines, and automatic Markdown visualization.
 
 ## What Makes This Different
 
-| Approach | How It Decides | Decision Latency | Extensibility |
+| Approach | How It Decides | Routing Latency | Extensibility |
 |:---|:---|:---|:---|
-| **Felona / JEV** | Embedding similarity → Next-Node Match | **~5ms** | ✅ Learns & generalizes |
-| Graph-based (Static) | Hardcoded rule branches | ~10ms | ❌ Fragile to off-script speech |
-| Pure LLM Prompts | Full prompt generation loop | ~500ms+ | ❌ Expensive & high latency |
+| **Felona / JEV** | Embedding similarity → next-node match | **Sub-millisecond**, in-process | ✅ Generalizes across phrasings |
+| Graph-based (Static) | Hardcoded rule branches | ~0ms | ❌ Fragile to off-script speech |
+| LLM Decides Everything | Full prompt generation loop | ~500ms+ | ❌ Expensive & high latency |
 
-**JEV predicts actions in ~5ms with zero LLM token latency. Deterministic, hallucination-free, ultra-low-cost conversational turns.**
+**JEV picks the action with no model call in the loop, and routes deterministically — a below-threshold match goes to your `fallback` action instead of improvising.** Action handlers return the exact string sent to TTS, so a turn can be a fixed string or whatever your handler computes (including a call to a language model, if you want free-form phrasing).
+
+> The built-in `FastSemanticEmbeddingProvider` is a deterministic lexical embedder (keyword anchors + character n-grams), not a neural network — routing is fast because it is in-process arithmetic. Pass `jev.embeddingProvider: "openai"` or your own `EmbeddingProvider` for neural embeddings.
 
 ## Quick Start
 
@@ -137,22 +139,24 @@ User speaks → STT → "I need help with my order"
                           ↓
               Selected: "lookup_order" (confidence: 0.87)
                           ↓
-              Action handler calls LLM: "Help the user look up their order..."
+              Action handler runs: look up the order, format a reply
                           ↓
-              LLM generates natural response → TTS → Agent speaks
+              TTS → Agent speaks
 ```
 
-1. **Context Encoder**: Embeds conversation history + current utterance into a vector
-2. **Predictor** (optional): Trained MLP that transforms context → predicted next-state
+1. **Context Encoder**: Fuses the current utterance (82%) with recent user turns (18%) into one vector
+2. **Predictor** (planned, not in this release): a trained model that transforms context → predicted next state. `jev.predictorModel` currently throws rather than pretending to work
 3. **Action Matcher**: Cosine similarity against pre-embedded action descriptions
-4. **Action Handler**: Executes the matched action (usually calls LLM for content)
+4. **Action Handler**: Your TypeScript. Returns the text that goes straight to TTS
 
-Cold-start mode (no predictor) works out of the box. As you collect call logs, train the predictor for better accuracy.
+Routing is deterministic. If the top match falls below `jev.confidenceThreshold` (default `0.35`), or is ambiguous, the `fallback` action runs instead — so an unrecognized utterance has a defined behaviour rather than an improvised one.
+
+**Generating replies with a language model:** the framework has no built-in LLM provider. Call your provider of choice inside an action handler and return its output; routing stays fast while phrasing is generated. See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ## Architecture
 
 ```
-Audio In → VAD → STT → JEV Decision → LLM Generate → TTS → Audio Out
+Audio In → VAD → STT → JEV Decision → Action Handler → TTS → Audio Out
                               ↕
                       Conversation Memory
 ```
@@ -163,10 +167,17 @@ Audio In → VAD → STT → JEV Decision → LLM Generate → TTS → Audio Out
 |-----------|-----------|
 | **STT** | Deepgram (streaming), Whisper, AssemblyAI, Azure, Google |
 | **TTS** | ElevenLabs, Deepgram Aura, Cartesia Sonic, OpenAI, Azure, Polly, LMNT |
-| **LLM** | OpenAI |
+| **Content** | Your action handlers — call any LLM/DB/API you like |
 | **VAD** | Energy-based (zero-dependency) |
 | **Embeddings** | OpenAI text-embedding-3-small, FastSemanticEmbedding |
-| **Transport** | WebSocket, Twilio Telephony (Media Streams) |
+| **Transport** | WebSocket, Twilio Telephony (Media Streams), WebRTC (browser/mobile) |
+| **Turn taking** | Energy VAD, STT endpointing, adaptive interruption, DTMF keypad |
+| **Slots** | Name, email, phone, address, ZIP, date, card (Luhn-checked) — spoken-input aware |
+| **Testing** | Declarable regression scenarios (`felona test`), wired into CI |
+| **Knowledge** | In-memory vector retrieval over your docs, reusing the JEV embedder |
+| **Tools** | Native `ToolRegistry`, plus any MCP server over JSON-RPC (zero dependencies) |
+| **Observability** | OpenTelemetry spans for every turn, routing decision, handler, tool call and TTS |
+| **Analytics** | Post-call outcome, sentiment, escalation risk and per-action confidence |
 | **Telephony** | Twilio, Telnyx (G.711 μ-law transcoding, TwiML auto-serve) |
 
 All providers implement pluggable interfaces — bring your own.
@@ -190,19 +201,98 @@ await phoneAgent.listenTwilio({ port: 8080 });
 ```
 👉 See [Telephony & Twilio Guide](./docs/TELEPHONY_TWILIO_GUIDE.md) for full instructions, Express middleware integration, and outbound calling.
 
+## Tools via MCP
+
+Borrow tools from any [MCP](https://modelcontextprotocol.io) server and call them like native ones. No SDK dependency — the client speaks JSON-RPC 2.0 over stdio directly.
+
+```typescript
+import { createAgent, createMcpClient } from "felona-voice";
+
+const weather = createMcpClient({
+  command: "npx",
+  args: ["-y", "@modelcontextprotocol/server-weather"],
+  env: { OPENWEATHER_API_KEY: process.env.OPENWEATHER_API_KEY },
+  namePrefix: "wx_",
+});
+
+const agent = await createAgent("Support")
+  .action("check_weather", "Check the weather in a city", async (ctx) => {
+    const result = await ctx.tools.call("wx_get_weather", { city: "Leeds" });
+    return `It is currently ${result.summary}.`;
+  })
+  .mcp(weather)
+  .connectMcp();          // connectMcp(), not build() — listing a server is async
+```
+
+Tools are validated before they reach the LLM, a tool that reports failure throws rather than being read aloud, and a wedged server times out instead of hanging the call.
+
+## OpenTelemetry Tracing
+
+Spans for every turn, routing decision, action handler, tool call and TTS synthesis. Built on the OpenTelemetry **API** only, so with no tracer provider registered it is a no-op and costs nothing.
+
+```typescript
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+new NodeSDK({ traceExporter: new OTLPTraceExporter() }).start();
+```
+
+A turn's spans nest — `felona.turn` → `felona.jev.decide` → `felona.action.handle` → `felona.tool.call` — which is what makes a slow reply explainable. **Transcript text is never written to a span**: turns are identified by a short SHA-256 fingerprint and a character count, because spans are stored by whatever backend you choose, usually far longer than the call.
+
+## WebRTC Transport
+
+For browser and mobile clients, where the media path is already encrypted and already handles NAT traversal.
+
+```typescript
+const agent = createAgent("Browser Assistant")
+  .transport({ type: "webrtc", port: 8080, authToken: process.env.SIGNALLING_TOKEN })
+  .build();
+```
+
+The transport serves a small signalling endpoint (`POST /offer`, `POST /offer/ice`) and carries **PCMU μ-law at 8 kHz as RTP** in both directions — the same G.711 code the telephony path already uses, so a deployment running both converts audio once. The answer deliberately offers PCMU only, because that is the only codec the inbound path decodes.
+
+Set `authToken` for anything reachable off-box: the media is DTLS-SRTP encrypted, but the signalling endpoint is plain HTTP and will otherwise hand out peer connections freely.
+
+## Post-call Analytics
+
+```typescript
+const agent = createAgent("Support")
+  .analysis({
+    successActions: ["order_confirmed", "refund_issued"],
+    escalationActions: ["transfer_human"],
+  })
+  .build();
+
+agent.on("callAnalysis", (a) => console.log(a.summary, a.resolved, a.outcomeScore));
+```
+
+Without `analysis()`, the outcome is inferred from the transcript alone. Naming the actions that end well — or passing `resolve` when your systems know the real outcome — is what makes the result trustworthy enough to bill or escalate on.
+
 ## Examples
 
 - [`basic-greeting`](./examples/basic-greeting/) — Simplest possible agent (3 actions)
 - [`customer-support`](./examples/customer-support/) — Multi-action agent with tool calling
 - [`voice-graph-flow`](./examples/voice-graph-flow/) — Stateful conversation graph flow example
 - [`twilio-phone-agent`](./examples/twilio-phone-agent/) — Live mobile phone agent with Twilio Media Streams
+- [`scenarios.ts`](./examples/scenarios.ts) — Regression scenarios (`npx felona test ./examples/scenarios.ts`)
 
 ## Project Structure
 
 ```
 packages/
-├── core/          # Framework kernel (FelAgent, JEV, VoiceGraph, Visualizers)
-└── cli/           # Developer CLI (felona-cli — visualize, scaffold, dev)
+├── core/
+│   └── src/
+│       ├── jev/            # Joint Embedding Vector engine
+│       ├── transport/      # WebSocket, WebRTC (RTP/PCMU) transports
+│       ├── telephony/      # Twilio, G.711 transcoding, call transfer
+│       ├── stt/ tts/ vad/  # Pluggable providers
+│       ├── slots/ i18n/    # Slot collection, language policy
+│       ├── knowledge/      # In-memory vector retrieval
+│       ├── supervision/    # Transfer and escalation handling
+│       ├── tools/          # ToolRegistry + MCP client
+│       ├── observability/  # OpenTelemetry tracing
+│       ├── analytics/      # Post-call outcome & sentiment
+│       └── testing/        # Scenario runner
+└── cli/           # Developer CLI (felona-cli — visualize, scaffold, dev, test)
 examples/
 ├── basic-greeting/     # Minimal 3-action starter agent
 ├── customer-support/   # Multi-action support agent with tool calling
@@ -210,9 +300,10 @@ examples/
 
 ## Roadmap
 
-- [x] **Phase 1**: Core framework — JEV engine, VoiceGraph, streaming audio pipeline, Deepgram STT/TTS, ElevenLabs TTS, OpenAI LLM
+- [x] **Phase 1**: Core framework — JEV engine, VoiceGraph, streaming audio pipeline, Deepgram/Whisper/AssemblyAI/Azure/Google STT, ElevenLabs/Deepgram/OpenAI/Cartesia/Azure/Polly/LMNT TTS, Twilio telephony, G.711 μ-law + A-law transcoding
 - [x] **Phase 1.5**: Stateful conversation graphs, fluent builders, Markdown & ASCII graph visualizer
-- [ ] **Phase 2**: JEV predictor training from call logs, WebRTC transport
+- [x] **Phase 2**: WebRTC transport (signalling, PCMU/RTP packetization, barge-in), MCP tool support, OpenTelemetry tracing, post-call outcome & sentiment scoring
+- [ ] **Phase 2b**: JEV predictor training from call logs, built-in LLM content provider
 - [ ] **Phase 3**: YAML declarative agent configs, analytics dashboard
 - [ ] **Phase 4**: Interactive visual canvas agent builder
 

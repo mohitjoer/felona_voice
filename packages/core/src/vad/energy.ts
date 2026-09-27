@@ -16,6 +16,17 @@ import type { VADProvider, VADResult, VADEvent, AudioChunk } from "../types.js";
  * 2. Compare against adaptive threshold
  * 3. Use hangover timer to prevent false speech-end events
  */
+export interface EnergyVADOptions {
+  /** RMS threshold to start detecting speech (0-1). Default: 0.01 */
+  speechThreshold?: number;
+  /** RMS threshold to stop detecting speech (0-1). Default: 0.005 */
+  silenceThreshold?: number;
+  /** Milliseconds to wait after last speech before emitting speech_end. Default: 800 */
+  hangoverMs?: number;
+  /** Minimum speech duration to be considered valid. Default: 100 */
+  minSpeechMs?: number;
+}
+
 export class EnergyVAD implements VADProvider {
   readonly name = "energy";
 
@@ -30,20 +41,44 @@ export class EnergyVAD implements VADProvider {
   private energyHistory: number[] = [];
   private readonly historySize = 30;
 
-  constructor(options?: {
-    /** RMS threshold to start detecting speech (0-1). Default: 0.01 */
-    speechThreshold?: number;
-    /** RMS threshold to stop detecting speech (0-1). Default: 0.005 */
-    silenceThreshold?: number;
-    /** Milliseconds to wait after last speech before emitting speech_end. Default: 800 */
-    hangoverMs?: number;
-    /** Minimum speech duration to be considered valid. Default: 100 */
-    minSpeechMs?: number;
-  }) {
+  constructor(options?: EnergyVADOptions) {
     this.speechThreshold = options?.speechThreshold ?? 0.01;
     this.silenceThreshold = options?.silenceThreshold ?? 0.005;
     this.hangoverMs = options?.hangoverMs ?? 800;
     this.minSpeechMs = options?.minSpeechMs ?? 100;
+
+    // Validate each value on its own before the cross-check, so a bad
+    // threshold reports the actual problem rather than the relationship error.
+    for (const [key, value] of [
+      ["speechThreshold", this.speechThreshold],
+      ["silenceThreshold", this.silenceThreshold],
+    ] as const) {
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new Error(
+          `EnergyVAD: ${key} must be a positive finite number (got ${value}).`,
+        );
+      }
+    }
+    for (const [key, value] of [
+      ["hangoverMs", this.hangoverMs],
+      ["minSpeechMs", this.minSpeechMs],
+    ] as const) {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error(
+          `EnergyVAD: ${key} must be a non-negative finite number (got ${value}).`,
+        );
+      }
+    }
+
+    // A silence threshold at or above the speech threshold means the "still
+    // speaking" branch can never be exited, so speech_start fires once and the
+    // VAD then latches on forever. Fail loudly instead.
+    if (!(this.silenceThreshold < this.speechThreshold)) {
+      throw new Error(
+        `EnergyVAD: silenceThreshold (${this.silenceThreshold}) must be lower than ` +
+          `speechThreshold (${this.speechThreshold}), otherwise speech never ends.`,
+      );
+    }
   }
 
   process(chunk: AudioChunk): VADResult {
@@ -126,10 +161,6 @@ function computeRMS(buffer: Buffer, bitDepth: number): number {
   return Math.sqrt(sumSquares / samples);
 }
 
-export function createEnergyVAD(options?: {
-  speechThreshold?: number;
-  silenceThreshold?: number;
-  hangoverMs?: number;
-}): EnergyVAD {
+export function createEnergyVAD(options?: EnergyVADOptions): EnergyVAD {
   return new EnergyVAD(options);
 }

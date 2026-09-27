@@ -5,6 +5,32 @@ export interface MemorySessionStoreOptions {
   defaultTtlMs?: number;
   /** How often to run the cleanup sweep in milliseconds (default: 60 seconds) */
   cleanupIntervalMs?: number;
+  /**
+   * Called whenever a session is dropped for inactivity.
+   * Lets `SessionStats.totalExpired` reflect reality.
+   */
+  onExpired?: (id: string) => void;
+}
+
+/**
+ * Deep-enough copy of a session record.
+ *
+ * The nested containers (`metadata`, `slots`, `turns`) are copied because
+ * `SessionManager` mutates them in place before calling `set()`. A shallow
+ * `{...record}` would hand out live references into the store, so a caller
+ * mutating a "copy" would silently mutate stored state and bypass the
+ * `lastActiveAt` bookkeeping.
+ *
+ * `metadata` values are left as-is: they are user-supplied and may legitimately
+ * hold non-cloneable values.
+ */
+function cloneRecord(record: SessionRecord): SessionRecord {
+  return {
+    ...record,
+    metadata: { ...record.metadata },
+    slots: { ...record.slots },
+    turns: record.turns.map((turn) => ({ ...turn })),
+  };
 }
 
 /**
@@ -18,9 +44,11 @@ export class MemorySessionStore implements SessionStore {
   private records = new Map<string, SessionRecord>();
   private defaultTtlMs: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private readonly onExpired?: (id: string) => void;
 
   constructor(options?: MemorySessionStoreOptions) {
     this.defaultTtlMs = options?.defaultTtlMs ?? 30 * 60 * 1000; // 30 minutes
+    this.onExpired = options?.onExpired;
     const interval = options?.cleanupIntervalMs ?? 60 * 1000;
 
     if (interval > 0) {
@@ -38,10 +66,11 @@ export class MemorySessionStore implements SessionStore {
 
     if (this.isExpired(record)) {
       this.records.delete(id);
+      this.onExpired?.(id);
       return null;
     }
 
-    return { ...record };
+    return cloneRecord(record);
   }
 
   async set(id: string, record: SessionRecord): Promise<void> {
@@ -49,6 +78,9 @@ export class MemorySessionStore implements SessionStore {
     this.records.set(id, {
       ...record,
       id,
+      metadata: { ...record.metadata },
+      slots: { ...record.slots },
+      turns: record.turns.map((turn) => ({ ...turn })),
       ttlMs: ttl,
       lastActiveAt: record.lastActiveAt || Date.now(),
     });
@@ -72,6 +104,7 @@ export class MemorySessionStore implements SessionStore {
     for (const [id, record] of this.records) {
       if (this.isExpired(record, now)) {
         this.records.delete(id);
+        this.onExpired?.(id);
         continue;
       }
 
@@ -79,7 +112,7 @@ export class MemorySessionStore implements SessionStore {
         continue;
       }
 
-      result.push({ ...record });
+      result.push(cloneRecord(record));
     }
 
     return result;
@@ -108,6 +141,7 @@ export class MemorySessionStore implements SessionStore {
     for (const [id, record] of this.records) {
       if (this.isExpired(record, now)) {
         this.records.delete(id);
+        this.onExpired?.(id);
       }
     }
   }

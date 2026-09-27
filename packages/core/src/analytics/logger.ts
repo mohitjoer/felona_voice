@@ -1,17 +1,30 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { ConversationTurn, Session, ActionMatch } from "../types.js";
+import type { ConversationTurn, Session } from "../types.js";
+
+/**
+ * Make a session ID safe to use as a filename component.
+ *
+ * Session IDs can be caller-supplied (`interact({ sessionId })`, or a telephony
+ * stream SID), so using one verbatim would let `../../etc/cron.d/x` escape the
+ * log directory.
+ */
+function safeFilenameComponent(id: string): string {
+  const cleaned = id.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "_");
+  const trimmed = cleaned.slice(0, 64);
+  return trimmed.length > 0 ? trimmed : "session";
+}
 
 /**
  * CallLogger — Logs structured conversation data for JEV training and analytics.
  *
- * Every completed call produces a log file with:
+ * Every completed call can produce a log file with:
  * - Session metadata
  * - All conversation turns
  * - JEV decisions (action selected, confidence, candidates)
  * - Timing information
  *
- * These logs are the training data for the JEV predictor (Phase 2).
+ * Nothing is written unless the caller explicitly supplies a `logDir`.
  */
 export class CallLogger {
   private readonly logDir: string;
@@ -25,7 +38,7 @@ export class CallLogger {
   }) {
     this.logDir = options?.logDir ?? "";
     this.level = options?.level ?? "info";
-    // Never persist call logs to disk unless user explicitly provided a log directory
+    // Never persist call logs to disk unless user explicitly provided a logDir
     this.enabled = options?.enabled !== undefined ? options.enabled : Boolean(options?.logDir);
   }
 
@@ -38,7 +51,7 @@ export class CallLogger {
 
     await mkdir(this.logDir, { recursive: true });
 
-    const filename = `${data.session.id}_${Date.now()}.json`;
+    const filename = `${safeFilenameComponent(data.session.id)}_${Date.now()}.json`;
     const filepath = join(this.logDir, filename);
 
     const logData: CallLogFile = {
@@ -82,11 +95,22 @@ export class CallLogger {
 
     const prefix = `[Felona/${level.toUpperCase()}]`;
     const timestamp = new Date().toISOString();
+    const line = `${prefix} ${timestamp} ${message}`;
 
-    if (data) {
-      console.log(`${prefix} ${timestamp} ${message}`, data);
+    // Route by severity so errors and warnings are visible in default
+    // console filters and reach log shippers that read stderr.
+    if (level === "error") {
+      if (data) console.error(line, data);
+      else console.error(line);
+    } else if (level === "warn") {
+      if (data) console.warn(line, data);
+      else console.warn(line);
+    } else if (level === "debug") {
+      if (data) console.debug(line, data);
+      else console.debug(line);
     } else {
-      console.log(`${prefix} ${timestamp} ${message}`);
+      if (data) console.log(line, data);
+      else console.log(line);
     }
   }
 }

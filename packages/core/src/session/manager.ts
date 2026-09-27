@@ -5,8 +5,8 @@ import type {
   SessionStore,
   SessionManagerOptions,
   SessionStats,
-  SessionState,
   ConversationTurn,
+  SessionAccessor,
 } from "../types.js";
 import { MemorySessionStore } from "./memory-store.js";
 
@@ -17,36 +17,57 @@ import { MemorySessionStore } from "./memory-store.js";
  * Pluggable store backend allows scaling out across multiple servers or worker processes
  * using shared stores (such as Redis) while preserving caller context, memory, and slots.
  */
-export class SessionManager extends EventEmitter {
+export class SessionManager extends EventEmitter implements SessionAccessor {
   private store: SessionStore;
   private hasUserDatabase: boolean;
   private maxConcurrent: number;
   private ttlMs: number;
   private totalCreated = 0;
   private totalExpired = 0;
+  /**
+   * Sessions currently being created.
+   *
+   * `canAcceptSession()` awaits the store, so N concurrent callers can all
+   * observe the same count and all pass the limit. Counting in-flight creates
+   * closes that window.
+   */
+  private creating = 0;
 
   constructor(options?: SessionManagerOptions) {
     super();
     this.hasUserDatabase = Boolean(options?.store);
-    this.store = options?.store ?? new MemorySessionStore({
-      defaultTtlMs: options?.ttlMs,
-      cleanupIntervalMs: options?.cleanupIntervalMs,
-    });
+    this.store =
+      options?.store ??
+      new MemorySessionStore({
+        defaultTtlMs: options?.ttlMs,
+        cleanupIntervalMs: options?.cleanupIntervalMs,
+        onExpired: () => {
+          this.totalExpired++;
+        },
+      });
     this.maxConcurrent = options?.maxConcurrent ?? Infinity;
     this.ttlMs = options?.ttlMs ?? 30 * 60 * 1000;
   }
 
   /**
    * Check if the current agent instance can accept a new concurrent session.
+   *
+   * Informational only — `createSession()` is authoritative, because this
+   * cannot see sessions that are mid-creation.
    */
   async canAcceptSession(): Promise<boolean> {
     if (this.maxConcurrent === Infinity) return true;
     const active = await this.getActiveCount();
-    return active < this.maxConcurrent;
+    return active + this.creating < this.maxConcurrent;
   }
 
   /**
    * Create and persist a new session record.
+   *
+   * This is the single concurrency gate. The slot is reserved *synchronously*
+   * before any `await`, because `getActiveCount()` yields — reserving afterwards
+   * let every simultaneous caller observe the same count and all pass the
+   * limit together.
    */
   async createSession(options?: {
     id?: string;
@@ -54,32 +75,47 @@ export class SessionManager extends EventEmitter {
     slots?: Record<string, unknown>;
     ttlMs?: number;
   }): Promise<SessionRecord> {
-    if (!await this.canAcceptSession()) {
-      const active = await this.getActiveCount();
-      this.emit("concurrencyLimitReached", active, this.maxConcurrent);
-      throw new Error(
-        `Session concurrency limit reached: ${active} active sessions (max: ${this.maxConcurrent})`
-      );
+    if (this.maxConcurrent !== Infinity) {
+      this.creating++;
     }
 
-    const id = options?.id || randomUUID();
-    const now = Date.now();
+    try {
+      if (this.maxConcurrent !== Infinity) {
+        const active = await this.getActiveCount();
+        // `creating` includes this call, so discount it.
+        const projected = active + this.creating - 1;
 
-    const record: SessionRecord = {
-      id,
-      createdAt: now,
-      lastActiveAt: now,
-      state: "active",
-      metadata: options?.metadata ? { ...options.metadata } : {},
-      slots: options?.slots ? { ...options.slots } : {},
-      turns: [],
-      ttlMs: options?.ttlMs ?? this.ttlMs,
-    };
+        if (projected >= this.maxConcurrent) {
+          this.emit("concurrencyLimitReached", active, this.maxConcurrent);
+          throw new Error(
+            `Session concurrency limit reached: ${active} active sessions (max: ${this.maxConcurrent})`,
+          );
+        }
+      }
 
-    await this.store.set(id, record);
-    this.totalCreated++;
-    this.emit("sessionCreated", record);
-    return record;
+      const id = options?.id || randomUUID();
+      const now = Date.now();
+
+      const record: SessionRecord = {
+        id,
+        createdAt: now,
+        lastActiveAt: now,
+        state: "active",
+        metadata: options?.metadata ? { ...options.metadata } : {},
+        slots: options?.slots ? { ...options.slots } : {},
+        turns: [],
+        ttlMs: options?.ttlMs ?? this.ttlMs,
+      };
+
+      await this.store.set(id, record);
+      this.totalCreated++;
+      this.emit("sessionCreated", record);
+      return record;
+    } finally {
+      if (this.maxConcurrent !== Infinity) {
+        this.creating--;
+      }
+    }
   }
 
   /**
@@ -115,7 +151,6 @@ export class SessionManager extends EventEmitter {
     record.slots[key] = value;
     await this.saveSession(record);
   }
-
   /**
    * Retrieve a slot value from a session.
    */
@@ -225,6 +260,10 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Get session telemetry and operational stats.
+   *
+   * `totalExpired` counts sessions dropped by the built-in memory store's TTL
+   * sweep. A custom `SessionStore` expires its own records, so it should call
+   * `SessionManager.recordExpiration()` to keep this counter accurate.
    */
   async getStats(): Promise<SessionStats> {
     const activeCount = await this.getActiveCount();
@@ -234,6 +273,16 @@ export class SessionManager extends EventEmitter {
       maxConcurrent: this.maxConcurrent,
       totalExpired: this.totalExpired,
     };
+  }
+
+  /**
+   * Report that the underlying store expired a session.
+   *
+   * Custom stores own their own expiry, so they call this to keep
+   * `getStats().totalExpired` meaningful.
+   */
+  recordExpiration(count = 1): void {
+    this.totalExpired += count;
   }
 
   /**

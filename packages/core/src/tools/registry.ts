@@ -1,4 +1,5 @@
 import type { AgentTool, ToolExecutor } from "../types.js";
+import { SPAN, type FelonaTracer } from "../observability/tracing.js";
 
 /**
  * ToolRegistry — Manages tool registration and execution.
@@ -8,6 +9,16 @@ import type { AgentTool, ToolExecutor } from "../types.js";
  */
 export class ToolRegistry implements ToolExecutor {
   private tools: Map<string, AgentTool> = new Map();
+  /**
+   * Optional instrumentation. A registry created by the pipeline inherits the
+   * agent's tracer so a tool call nests under the turn that triggered it.
+   */
+  private tracer: FelonaTracer | null = null;
+
+  /** Trace tool calls. Pass `null` to stop tracing them. */
+  setTracer(tracer: FelonaTracer | null): void {
+    this.tracer = tracer;
+  }
 
   /** Register a tool */
   register(tool: AgentTool): void {
@@ -36,9 +47,35 @@ export class ToolRegistry implements ToolExecutor {
       );
     }
 
+    // A tool is the step most likely to leave the process, so it gets the most
+    // careful attributes: the tool name and the shape of the arguments, never
+    // the argument values, which routinely hold whatever the caller said.
+    const spanAttrs = {
+      "felona.tool.name": toolName,
+      "felona.tool.arg_keys": Object.keys(params ?? {}).join(","),
+    };
+
+    if (!this.tracer) return this.invoke(toolName, tool, params);
+
+    return this.tracer.span(SPAN.toolCall, spanAttrs, async (span) => {
+      try {
+        const result = await this.invoke(toolName, tool, params);
+        span.setAttribute("felona.tool.ok", true);
+        return result;
+      } catch (error) {
+        span.setAttribute("felona.tool.ok", false);
+        throw error;
+      }
+    });
+  }
+
+  private async invoke(
+    toolName: string,
+    tool: AgentTool,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
     try {
-      const result = await tool.execute(params ?? {});
-      return result;
+      return await tool.execute(params ?? {});
     } catch (error) {
       throw new Error(
         `Tool "${toolName}" execution failed: ${error instanceof Error ? error.message : String(error)}`,

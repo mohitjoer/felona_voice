@@ -1,6 +1,6 @@
 {
   "name": "felona-voice",
-  "version": "0.2.1",
+  "version": "0.2.5",
   "description": "Voice agent framework powered by JEV (Joint Embedding Vectors) for dynamic conversation flow",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -47,6 +47,8 @@
   "homepage": "https://github.com/felona-voice/felona-voice#readme",
   "license": "MIT",
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "werift": "^0.24.4",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -54,14 +56,6 @@
     "@types/ws": "^8.5.12",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
-  },
-  "peerDependencies": {
-    "onnxruntime-node": ">=1.18.0"
-  },
-  "peerDependenciesMeta": {
-    "onnxruntime-node": {
-      "optional": true
-    }
   },
   "engines": {
     "node": ">=20.0.0"

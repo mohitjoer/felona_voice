@@ -58,16 +58,17 @@ export class JEVEngine implements IJEVEngine {
 
   /**
    * Load a trained predictor model.
-   * In Phase 1, this is a no-op — we run in cold-start mode.
-   * Phase 2 will add ONNX.js predictor loading.
+   *
+   * Not implemented in this release. Trained predictors are a planned
+   * capability; rather than logging a message and silently continuing in
+   * cold-start mode — which would make a misconfigured deployment look like a
+   * working one — this rejects.
    */
   async loadPredictor(modelPath: string): Promise<void> {
-    // Phase 2: Load ONNX model here
-    // this.predictorModel = await loadONNXModel(modelPath);
-    console.log(
-      `[JEV] Predictor model loading not yet implemented. Path: ${modelPath}`,
+    throw new Error(
+      `Trained JEV predictors are not supported in this version (requested model: "${modelPath}"). ` +
+        "Remove jev.predictorModel to use cold-start semantic routing.",
     );
-    console.log("[JEV] Running in cold-start mode (direct embedding similarity)");
   }
 
   /**
@@ -121,7 +122,7 @@ export class JEVEngine implements IJEVEngine {
    *
    * Joint Embedding Fusion (JEV):
    * 1. Primary vector: Current user utterance (immediate intent, 82% weight).
-   * 2. Context vector: Prior conversational trajectory (continuity, 18% weight).
+   * 2. Context vector: Prior user utterances (continuity, 18% weight).
    *
    * This guarantees that new user intents (e.g. topic changes, greetings, escalations)
    * trigger immediately without being overpowered or trapped by prior conversation states.
@@ -135,10 +136,22 @@ export class JEVEngine implements IJEVEngine {
     // 1. Primary vector: immediate user utterance
     const utteranceVec = await this.embeddingProvider.embed(context.currentUtterance);
 
-    // 2. Secondary vector: prior user requests
+    // 2. Secondary vector: prior user requests.
+    //
+    // The caller's most recent user turn *is* the current utterance (it is added
+    // to memory before decide()). It is already weighted at 82% above, so it is
+    // dropped here — otherwise the documented 82/18 split is really 91/9 of the
+    // same text plus a whisper of history.
     const priorTurns = context.turns
       .filter((t) => t.role === "user")
-      .slice(-3);
+      .slice(-4);
+
+    if (
+      priorTurns.length > 0 &&
+      priorTurns[priorTurns.length - 1].content === context.currentUtterance
+    ) {
+      priorTurns.pop();
+    }
 
     if (priorTurns.length === 0) {
       return utteranceVec;
@@ -171,19 +184,14 @@ export class JEVEngine implements IJEVEngine {
   /**
    * Predict the next-state vector from a context vector.
    *
-   * In cold-start mode (no predictor), returns the input vector unchanged.
-   * With a trained predictor, transforms the context vector to predict
-   * what the next conversation state should look like.
+   * Cold-start mode (no predictor): returns the input vector unchanged, so
+   * matching happens directly against the action space.
    */
   async predict(contextVector: Float64Array): Promise<Float64Array> {
     if (!this.predictorModel) {
-      // Cold-start mode: direct passthrough
       return contextVector;
     }
-
-    // Phase 2: Run ONNX predictor
-    // return this.predictorModel.predict(contextVector);
-    return contextVector;
+    return this.predictorModel.predict(contextVector);
   }
 
   /**
@@ -192,38 +200,6 @@ export class JEVEngine implements IJEVEngine {
   async match(vector: Float64Array): Promise<ActionMatch> {
     this.assertInitialized();
     return this.actionSpace.match(vector);
-  }
-
-  /**
-   * Build a text string from the conversation context for embedding.
-   *
-   * Design: The current user utterance is the decisive signal for next-node prediction.
-   * We weight the current utterance heavily and only include prior user queries for
-   * context topic, preventing previous agent responses from creating self-reinforcing loops.
-   */
-  private buildContextString(context: ConversationContext): string {
-    const parts: string[] = [];
-
-    // 1. Current user utterance — primary intent signal (tripled for weight)
-    if (context.currentUtterance) {
-      const u = context.currentUtterance.trim();
-      parts.push(`User Query: ${u}`);
-      parts.push(`User Intent: ${u}`);
-      parts.push(`Current Utterance: ${u}`);
-    }
-
-    // 2. Prior user queries only (provides conversation continuity without action-ID loops)
-    const priorUserTurns = context.turns
-      .filter((t) => t.role === "user")
-      .slice(-2);
-    if (priorUserTurns.length > 0) {
-      const history = priorUserTurns
-        .map((t) => `Prior Request: ${t.content}`)
-        .join("\n");
-      parts.push(`Recent Context:\n${history}`);
-    }
-
-    return parts.join("\n\n");
   }
 
   /** Get the action space (for testing/inspection) */

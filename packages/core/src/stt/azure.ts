@@ -7,6 +7,7 @@ import type {
   AudioChunk,
 } from "../types.js";
 import { pcmToWav } from "./wav.js";
+import { MissingCredentialsError } from "./credentials.js";
 
 export interface AzureSTTOptions {
   apiKey: string;
@@ -33,6 +34,12 @@ export class AzureSTT implements STTProvider {
   }
 
   createStream(options?: STTStreamOptions): STTStream {
+    if (!this.options.apiKey) {
+      throw new MissingCredentialsError(
+        "azure",
+        'stt: { provider: "azure", apiKey, region: "eastus" }',
+      );
+    }
     return new AzureSTTStream({
       ...this.options,
       language: options?.language ?? this.options.language ?? "en-US",
@@ -43,7 +50,9 @@ export class AzureSTT implements STTProvider {
 class AzureSTTStream extends EventEmitter implements STTStream {
   private chunks: Buffer[] = [];
   private resultHandler: ((result: STTResult) => void) | null = null;
+  private errorHandler: ((error: Error) => void) | null = null;
   private isClosed = false;
+  private inFlight: Promise<void> = Promise.resolve();
   private readonly config: AzureSTTOptions;
 
   constructor(config: AzureSTTOptions) {
@@ -60,10 +69,31 @@ class AzureSTTStream extends EventEmitter implements STTStream {
     this.resultHandler = handler;
   }
 
-  async close(): Promise<void> {
-    if (this.isClosed) return;
-    this.isClosed = true;
+  onError(handler: (error: Error) => void): void {
+    this.errorHandler = handler;
+  }
 
+  private reportError(context: string, err: unknown): void {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (this.errorHandler) {
+      this.errorHandler(error);
+    } else {
+      console.error(`[STT/Azure] ${context}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Recognize everything buffered so far.
+   *
+   * Azure's batch endpoint has no streaming equivalent, so the pipeline calls
+   * this when the user stops speaking to get a result mid-call.
+   */
+  async flush(): Promise<void> {
+    this.inFlight = this.inFlight.then(() => this.recognize());
+    await this.inFlight;
+  }
+
+  private async recognize(): Promise<void> {
     if (this.chunks.length === 0) return;
 
     const fullPcm = Buffer.concat(this.chunks);
@@ -96,7 +126,7 @@ class AzureSTTStream extends EventEmitter implements STTStream {
 
       if (!res.ok) {
         const err = await res.text();
-        console.error(`[STT/Azure] Recognition error ${res.status}: ${err}`);
+        this.reportError(`recognition error ${res.status}`, err);
         return;
       }
 
@@ -130,8 +160,14 @@ class AzureSTTStream extends EventEmitter implements STTStream {
         });
       }
     } catch (err) {
-      console.error("[STT/Azure] Transcription failed:", err);
+      this.reportError("transcription failed", err);
     }
+  }
+
+  async close(): Promise<void> {
+    if (this.isClosed) return;
+    this.isClosed = true;
+    await this.flush();
   }
 }
 

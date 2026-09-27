@@ -1,6 +1,61 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
+
+/**
+ * Escape text for interpolation into HTML text or a quoted attribute.
+ *
+ * Node descriptions and graph names are developer-supplied strings that end up
+ * in generated files; without escaping, a description containing markup is
+ * injected verbatim into the visualizer.
+ */
+function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Escape a string for embedding inside an HTML `<script>` block.
+ *
+ * Escaping only `<` is sufficient and necessary: it is the only character that
+ * can terminate the script element, so `</script>` in a node description cannot
+ * break out into markup.
+ */
+function escapeJsonForScript(json: string): string {
+  return json
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+/**
+ * Make a node ID safe to use as a Mermaid identifier.
+ *
+ * Mermaid reserves punctuation and treats some characters structurally, so an ID
+ * like `order-status (v2)` or `a;b` produces a syntax error rather than a node.
+ */
+function mermaidId(id: string): string {
+  const cleaned = id.replace(/[^a-zA-Z0-9_]/g, "_");
+  return /^[0-9]/.test(cleaned) ? `n_${cleaned}` : cleaned || "node";
+}
+
+/**
+ * Escape text for use inside a Mermaid double-quoted label.
+ */
+function mermaidLabel(text: string): string {
+  return text
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[{}[\]|]/g, (c) => `&#${c.charCodeAt(0)};`);
+}
 
 export interface GraphData {
   name?: string;
@@ -43,7 +98,7 @@ export function extractGraphData(target: unknown): GraphData {
     throw new Error("Invalid graph target: expected VoiceGraph, CompiledVoiceGraph, FelAgent, or GraphData");
   }
 
-  const obj = target as Record<string, any>;
+  const obj = target as Record<string, unknown>;
 
   // If object has .getGraph() method (VoiceGraph or CompiledVoiceGraph)
   if (typeof obj.getGraph === "function") {
@@ -73,11 +128,17 @@ export function extractGraphData(target: unknown): GraphData {
 
   // If raw GraphData with nodes array
   if (Array.isArray(obj.nodes)) {
+    const nodes = obj.nodes as GraphData["nodes"];
+    const edges = Array.isArray(obj.edges)
+      ? (obj.edges as GraphData["edges"])
+      : [];
     return {
       name: (obj.name as string) || "Voice Graph",
-      nodes: obj.nodes,
-      edges: Array.isArray(obj.edges) ? obj.edges : [],
-      entryPoint: (obj.entryPoint as string) || (obj.nodes.length > 0 ? obj.nodes[0].id : undefined),
+      nodes,
+      edges,
+      entryPoint:
+        (obj.entryPoint as string) ||
+        (nodes.length > 0 ? nodes[0].id : undefined),
     };
   }
 
@@ -188,7 +249,7 @@ export function drawAscii(target: unknown, options?: { title?: string }): string
  */
 export function drawMermaid(target: unknown): string {
   const data = extractGraphData(target);
-  const lines: string[] = ["graph TD"];
+  const lines: string[] = ["flowchart TD"];
 
   lines.push("  %% Felona Voice Graph Flowchart");
   lines.push("  classDef startNode fill:#10b981,stroke:#059669,stroke-width:2px,color:#fff;");
@@ -198,38 +259,38 @@ export function drawMermaid(target: unknown): string {
   lines.push("");
 
   const entry = data.entryPoint || (data.nodes.length > 0 ? data.nodes[0].id : "start");
-  lines.push(`  START((START)):::startNode --> ${entry}`);
+  const entryId = mermaidId(entry);
+  lines.push(`  START((START)):::startNode --> ${entryId}`);
 
   for (const node of data.nodes) {
-    const cleanDesc = node.description
-      ? node.description.replace(/"/g, "'").replace(/\n/g, " ")
-      : "";
+    const id = mermaidId(node.id);
+    const cleanDesc = node.description ? mermaidLabel(node.description) : "";
     const label = cleanDesc
-      ? `${node.id}["<b>${node.id}</b><br/><small>${cleanDesc}</small>"]`
-      : `${node.id}["<b>${node.id}</b>"]`;
+      ? `${id}["<b>${mermaidLabel(node.id)}</b><br/><small>${cleanDesc}</small>"]`
+      : `${id}["<b>${mermaidLabel(node.id)}</b>"]`;
 
     lines.push(`  ${label}`);
 
     if (node.id === entry) {
-      lines.push(`  class ${node.id} entryNode;`);
+      lines.push(`  class ${id} entryNode;`);
     } else if (node.id === "fallback") {
-      lines.push(`  class ${node.id} fallbackNode;`);
+      lines.push(`  class ${id} fallbackNode;`);
     } else {
-      lines.push(`  class ${node.id} actionNode;`);
+      lines.push(`  class ${id} actionNode;`);
     }
   }
 
   if (data.edges.length > 0) {
     lines.push("");
     for (const edge of data.edges) {
-      lines.push(`  ${edge.from} --> ${edge.to}`);
+      lines.push(`  ${mermaidId(edge.from)} --> ${mermaidId(edge.to)}`);
     }
   } else {
     lines.push("");
     lines.push("  %% Dynamic JEV Action Space: All nodes accessible via cosine proximity");
     for (const node of data.nodes) {
       if (node.id !== entry) {
-        lines.push(`  ${entry} -.->|JEV| ${node.id}`);
+        lines.push(`  ${entryId} -.->|JEV| ${mermaidId(node.id)}`);
       }
     }
   }
@@ -357,14 +418,15 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
   const title = options?.title || data.name || "Felona Voice Graph";
   const mermaidCode = drawMermaid(data);
   const mermaidLiveUrl = toMermaidLiveUrl(mermaidCode);
-  const graphJson = JSON.stringify(data);
+  const graphJson = escapeJsonForScript(JSON.stringify(data));
+  const safeTitle = escapeHtml(title);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title} — Felona Visualizer</title>
+  <title>${safeTitle} — Felona Visualizer</title>
   <style>
     :root {
       --bg: #09090b;
@@ -633,7 +695,7 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
 <body>
   <header>
     <div class="header-left">
-      <h2 style="font-size: 16px; font-weight: 700;">🎙️ ${title}</h2>
+      <h2 style="font-size: 16px; font-weight: 700;">🎙️ ${safeTitle}</h2>
       <span class="badge">${data.nodes.length} Nodes</span>
       <span class="badge">${data.edges.length} Edges</span>
     </div>
@@ -705,6 +767,17 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
     const graphData = ${graphJson};
     let activeNodeId = null;
 
+    // Node ids and descriptions are developer-supplied and rendered via
+    // innerHTML below, so they must be escaped before insertion.
+    function esc(value) {
+      return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
     function renderNodes() {
       const layer = document.getElementById("nodesLayer");
       layer.innerHTML = "";
@@ -727,10 +800,10 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
 
         card.innerHTML = \`
           <div class="node-header">
-            <span class="node-id">\${node.id}</span>
-            <span class="node-tag \${tagClass}">\${tagLabel}</span>
+            <span class="node-id">\${esc(node.id)}</span>
+            <span class="node-tag \${tagClass}">\${esc(tagLabel)}</span>
           </div>
-          <div class="node-desc">\${node.description || "No description provided."}</div>
+          <div class="node-desc">\${esc(node.description || "No description provided.")}</div>
         \`;
         layer.appendChild(card);
       });
@@ -754,15 +827,15 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
       document.getElementById("inspectContent").innerHTML = \`
         <div style="margin-bottom: 12px;">
           <b style="color: #fff;">Description:</b><br/>
-          \${node.description || "—"}
+          \${esc(node.description || "—")}
         </div>
         <div style="margin-bottom: 12px;">
           <b style="color: #fff;">Outgoing Transitions (\${outgoing.length}):</b><br/>
-          \${outgoing.length > 0 ? outgoing.map(t => \`<code style="background: #27272a; padding: 2px 6px; border-radius: 4px; font-size: 12px;">\${t}</code>\`).join(" ") : "<span style='color:#71717a;'>Dynamic JEV Action Space</span>"}
+          \${outgoing.length > 0 ? outgoing.map(t => \`<code style="background: #27272a; padding: 2px 6px; border-radius: 4px; font-size: 12px;">\${esc(t)}</code>\`).join(" ") : "<span style='color:#71717a;'>Dynamic JEV Action Space</span>"}
         </div>
         <div style="margin-bottom: 12px;">
           <b style="color: #fff;">Incoming Transitions (\${incoming.length}):</b><br/>
-          \${incoming.length > 0 ? incoming.map(t => \`<code style="background: #27272a; padding: 2px 6px; border-radius: 4px; font-size: 12px;">\${t}</code>\`).join(" ") : (id === graphData.entryPoint ? "<span style='color:#60a5fa;'>START (Entry Point)</span>" : "<span style='color:#71717a;'>Dynamic JEV Action Space</span>")}
+          \${incoming.length > 0 ? incoming.map(t => \`<code style="background: #27272a; padding: 2px 6px; border-radius: 4px; font-size: 12px;">\${esc(t)}</code>\`).join(" ") : (id === graphData.entryPoint ? "<span style='color:#60a5fa;'>START (Entry Point)</span>" : "<span style='color:#71717a;'>Dynamic JEV Action Space</span>")}
         </div>
       \`;
     }
@@ -819,7 +892,7 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
       const candBox = document.getElementById("simCandidates");
       candBox.innerHTML = scores.map(s => \`
         <div class="candidate-row">
-          <span>\${s.node}</span>
+          <span>\${esc(s.node)}</span>
           <span style="color: \${s.score > 0.5 ? 'var(--accent-green)' : 'var(--muted)'}">\${(s.score * 100).toFixed(1)}%</span>
         </div>
       \`).join("");
@@ -841,24 +914,40 @@ export function generateGraphHtml(target: unknown, options?: { title?: string })
 
 /**
  * Open a file in the system default browser.
+ *
+ * Uses `spawn` with an argument vector and no shell. The path can come from
+ * `--out`, and `exec` with a quoted string let a path containing shell
+ * metacharacters run arbitrary commands.
  */
 function openInBrowser(filePath: string): void {
   const absPath = path.resolve(filePath);
   const platform = process.platform;
-  let cmd = "";
 
-  if (platform === "darwin") {
-    cmd = `open "${absPath}"`;
-  } else if (platform === "win32") {
-    cmd = `start "" "${absPath}"`;
-  } else {
-    // Linux / BSD
-    cmd = `xdg-open "${absPath}" || sensible-browser "${absPath}" || google-chrome "${absPath}" || firefox "${absPath}"`;
-  }
+  const attempts: Array<{ command: string; args: string[] }> =
+    platform === "darwin"
+      ? [{ command: "open", args: [absPath] }]
+      : platform === "win32"
+        ? [{ command: "cmd", args: ["/c", "start", "", absPath] }]
+        : [
+            { command: "xdg-open", args: [absPath] },
+            { command: "sensible-browser", args: [absPath] },
+            { command: "google-chrome", args: [absPath] },
+            { command: "firefox", args: [absPath] },
+          ];
 
-  exec(cmd, () => {
-    // Silently handle
-  });
+  const tryNext = (index: number): void => {
+    if (index >= attempts.length) return;
+    const { command, args } = attempts[index];
+    try {
+      const child = spawn(command, args, { stdio: "ignore", detached: true });
+      child.on("error", () => tryNext(index + 1));
+      child.unref();
+    } catch {
+      tryNext(index + 1);
+    }
+  };
+
+  tryNext(0);
 }
 
 /**
@@ -887,20 +976,33 @@ export async function visualizeGraph(
   const format = options?.format || (options?.open ? "html" : "ascii");
   const shouldPrint = options?.print !== false;
 
-  const ascii = drawAscii(data, { title });
-  const mermaid = drawMermaid(data);
-  const markdown = drawMarkdown(data, { title });
-  const url = toMermaidLiveUrl(mermaid);
-  const html = generateGraphHtml(data, { title });
+  // Render lazily. Building all four representations up front meant every
+  // `felona visualize --mermaid` call also assembled a ~100KB HTML document
+  // and a full ASCII render that were then thrown away.
+  const cache: Partial<Record<"ascii" | "markdown" | "mermaid" | "url" | "html", string>> = {};
+  const get = (
+    key: "ascii" | "markdown" | "mermaid" | "url" | "html",
+    build: () => string,
+  ): string => {
+    if (cache[key] === undefined) cache[key] = build();
+    return cache[key];
+  };
 
   let filePath: string | undefined;
 
-  if (format === "markdown" || format === "md" || (options?.outputPath && options.outputPath.endsWith(".md"))) {
+  const wantsMarkdown =
+    format === "markdown" || format === "md" ||
+    Boolean(options?.outputPath?.endsWith(".md"));
+  const wantsHtml =
+    format === "html" || Boolean(options?.open) ||
+    Boolean(options?.outputPath?.endsWith(".html"));
+
+  if (wantsMarkdown) {
     filePath = options?.outputPath || path.resolve(process.cwd(), "felona-graph.md");
-    fs.writeFileSync(filePath, markdown, "utf-8");
-  } else if (format === "html" || options?.open || (options?.outputPath && options.outputPath.endsWith(".html"))) {
+    fs.writeFileSync(filePath, get("markdown", () => drawMarkdown(data, { title })), "utf-8");
+  } else if (wantsHtml) {
     filePath = options?.outputPath || path.resolve(process.cwd(), "felona-graph.html");
-    fs.writeFileSync(filePath, html, "utf-8");
+    fs.writeFileSync(filePath, get("html", () => generateGraphHtml(data, { title })), "utf-8");
 
     if (options?.open) {
       openInBrowser(filePath);
@@ -908,29 +1010,26 @@ export async function visualizeGraph(
   }
 
   if (shouldPrint) {
-    if (format === "ascii") {
-      console.log(ascii);
-    } else if (format === "markdown" || format === "md") {
-      if (filePath) {
-        console.log(`\n✨ Graph Markdown file generated: ${filePath}`);
-      } else {
-        console.log(markdown);
-      }
-    } else if (format === "mermaid") {
-      console.log(mermaid);
-    } else if (format === "url") {
-      console.log(url);
-    } else if (format === "html" && filePath) {
+    if (wantsMarkdown) {
+      console.log(`\n✨ Graph Markdown file generated: ${filePath}`);
+    } else if (wantsHtml) {
       console.log(`\n✨ Graph HTML visualization generated: ${filePath}`);
+    } else if (format === "mermaid") {
+      console.log(get("mermaid", () => drawMermaid(data)));
+    } else if (format === "url") {
+      console.log(get("url", () => toMermaidLiveUrl(data)));
+    } else {
+      console.log(get("ascii", () => drawAscii(data, { title })));
     }
   }
 
-  return {
-    ascii,
-    mermaid,
-    markdown,
-    url,
-    html,
-    filePath,
-  };
+  // `VisualizeResult` promises every representation, so they are all built —
+  // but memoized, so the requested format is never rendered twice.
+  const ascii = get("ascii", () => drawAscii(data, { title }));
+  const mermaid = get("mermaid", () => drawMermaid(data));
+  const markdown = get("markdown", () => drawMarkdown(data, { title }));
+  const url = get("url", () => toMermaidLiveUrl(mermaid));
+  const html = get("html", () => generateGraphHtml(data, { title }));
+
+  return { ascii, mermaid, markdown, url, html, filePath };
 }

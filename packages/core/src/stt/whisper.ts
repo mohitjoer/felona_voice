@@ -7,6 +7,7 @@ import type {
   AudioChunk,
 } from "../types.js";
 import { pcmToWav } from "./wav.js";
+import { MissingCredentialsError } from "./credentials.js";
 
 export interface WhisperSTTOptions {
   apiKey: string;
@@ -36,6 +37,12 @@ export class WhisperSTT implements STTProvider {
   }
 
   createStream(options?: STTStreamOptions): STTStream {
+    if (!this.options.apiKey) {
+      throw new MissingCredentialsError(
+        "whisper",
+        'stt: { provider: "whisper", apiKey: process.env.OPENAI_API_KEY }',
+      );
+    }
     return new WhisperSTTStream({
       ...this.options,
       language: options?.language ?? this.options.language,
@@ -47,7 +54,9 @@ export class WhisperSTT implements STTProvider {
 class WhisperSTTStream extends EventEmitter implements STTStream {
   private chunks: Buffer[] = [];
   private resultHandler: ((result: STTResult) => void) | null = null;
+  private errorHandler: ((error: Error) => void) | null = null;
   private isClosed = false;
+  private inFlight: Promise<void> = Promise.resolve();
   private readonly config: WhisperSTTOptions & { keywords?: string[] };
 
   constructor(config: WhisperSTTOptions & { keywords?: string[] }) {
@@ -64,10 +73,34 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
     this.resultHandler = handler;
   }
 
-  async close(): Promise<void> {
-    if (this.isClosed) return;
-    this.isClosed = true;
+  onError(handler: (error: Error) => void): void {
+    this.errorHandler = handler;
+  }
 
+  private reportError(context: string, err: unknown): void {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (this.errorHandler) {
+      this.errorHandler(error);
+    } else {
+      console.error(`[STT/Whisper] ${context}:`, error.message);
+    }
+  }
+
+  /**
+   * Transcribe everything buffered so far.
+   *
+   * Whisper has no streaming endpoint, so audio is batched. The pipeline calls
+   * this when the user stops speaking, which is what makes batch providers
+   * usable on a live call instead of only at call end.
+   */
+  async flush(): Promise<void> {
+    // Serialize overlapping flushes so two turns cannot transcribe the same
+    // buffer twice.
+    this.inFlight = this.inFlight.then(() => this.transcribe());
+    await this.inFlight;
+  }
+
+  private async transcribe(): Promise<void> {
     if (this.chunks.length === 0) return;
 
     const fullPcm = Buffer.concat(this.chunks);
@@ -111,7 +144,7 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
 
       if (!res.ok) {
         const errText = await res.text();
-        console.error(`[STT/Whisper] Transcription error ${res.status}: ${errText}`);
+        this.reportError(`transcription error ${res.status}`, errText);
         return;
       }
 
@@ -143,8 +176,15 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
         words,
       });
     } catch (err) {
-      console.error("[STT/Whisper] Failed to transcribe audio:", err);
+      this.reportError("failed to transcribe audio", err);
     }
+  }
+
+  async close(): Promise<void> {
+    if (this.isClosed) return;
+    this.isClosed = true;
+    // Transcribe whatever is left so the tail of the call is not lost.
+    await this.flush();
   }
 }
 

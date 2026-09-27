@@ -7,6 +7,7 @@ import type {
   STTResult,
   AudioChunk,
 } from "../types.js";
+import { MissingCredentialsError } from "./credentials.js";
 
 export interface AssemblyAISTTOptions {
   apiKey: string;
@@ -32,12 +33,19 @@ export class AssemblyAISTT implements STTProvider {
   }
 
   createStream(options?: STTStreamOptions): STTStream {
+    if (!this.options.apiKey) {
+      throw new MissingCredentialsError(
+        "assemblyai",
+        'stt: { provider: "assemblyai", apiKey: process.env.ASSEMBLYAI_API_KEY }',
+      );
+    }
     return new AssemblyAISTTStream({
       apiKey: this.options.apiKey,
       sampleRate: this.options.sampleRate ?? 16000,
       baseUrl: this.options.baseUrl ?? "wss://api.assemblyai.com/v2/realtime/ws",
       wordBoost: options?.keywords ?? this.options.wordBoost,
       encoding: this.options.encoding ?? "pcm_s16le",
+      flushTimeoutMs: options?.flushTimeoutMs,
     });
   }
 }
@@ -45,15 +53,18 @@ export class AssemblyAISTT implements STTProvider {
 class AssemblyAISTTStream extends EventEmitter implements STTStream {
   private ws: WebSocket | null = null;
   private resultHandler: ((result: STTResult) => void) | null = null;
+  private errorHandler: ((error: Error) => void) | null = null;
   private readonly config: {
     apiKey: string;
     sampleRate: number;
     baseUrl: string;
     wordBoost?: string[];
     encoding: string;
+    flushTimeoutMs: number;
   };
   private connected = false;
   private isClosed = false;
+  private finalWaiters: Array<() => void> = [];
 
   constructor(config: {
     apiKey: string;
@@ -61,9 +72,10 @@ class AssemblyAISTTStream extends EventEmitter implements STTStream {
     baseUrl: string;
     wordBoost?: string[];
     encoding: string;
+    flushTimeoutMs?: number;
   }) {
     super();
-    this.config = config;
+    this.config = { ...config, flushTimeoutMs: config.flushTimeoutMs ?? 1500 };
     this.connect();
   }
 
@@ -94,12 +106,24 @@ class AssemblyAISTTStream extends EventEmitter implements STTStream {
     });
 
     this.ws.on("error", (error) => {
-      console.error("[STT/AssemblyAI] WebSocket error:", error.message);
+      const err = error instanceof Error ? error : new Error(String(error));
+      if (this.errorHandler) {
+        this.errorHandler(err);
+      } else {
+        console.error("[STT/AssemblyAI]", err.message);
+      }
     });
 
     this.ws.on("close", () => {
       this.connected = false;
+      this.releaseFinalWaiters();
     });
+  }
+
+  private releaseFinalWaiters(): void {
+    const waiters = this.finalWaiters;
+    this.finalWaiters = [];
+    for (const waiter of waiters) waiter();
   }
 
   write(chunk: AudioChunk): void {
@@ -117,9 +141,34 @@ class AssemblyAISTTStream extends EventEmitter implements STTStream {
     this.resultHandler = handler;
   }
 
+  onError(handler: (error: Error) => void): void {
+    this.errorHandler = handler;
+  }
+
+  /** Wait for AssemblyAI's endpointing final transcript for the current turn. */
+  async flush(): Promise<void> {
+    if (this.isClosed || !this.connected) return;
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.finalWaiters = this.finalWaiters.filter((w) => w !== done);
+        resolve();
+      };
+
+      const timer = setTimeout(done, this.config.flushTimeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+      this.finalWaiters.push(done);
+    });
+  }
+
   async close(): Promise<void> {
     if (this.isClosed) return;
     this.isClosed = true;
+    this.releaseFinalWaiters();
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
@@ -133,21 +182,21 @@ class AssemblyAISTTStream extends EventEmitter implements STTStream {
     this.connected = false;
   }
 
-  private handleMessage(msg: Record<string, any>): void {
+  private handleMessage(msg: Record<string, unknown>): void {
     const msgType = msg.message_type;
 
     if (msgType === "PartialTranscript" || msgType === "FinalTranscript") {
-      const text = (msg.text || "").trim();
+      const text = typeof msg.text === "string" ? msg.text.trim() : "";
       if (!text) return;
 
       const isFinal = msgType === "FinalTranscript";
       const confidence = typeof msg.confidence === "number" ? msg.confidence : 0.9;
 
       const words = Array.isArray(msg.words)
-        ? msg.words.map((w: any) => ({
-            word: w.text,
-            startMs: w.start,
-            endMs: w.end,
+        ? (msg.words as Array<{ text?: string; start?: number; end?: number }>).map((w) => ({
+            word: w.text ?? "",
+            startMs: w.start ?? 0,
+            endMs: w.end ?? 0,
           }))
         : undefined;
 
@@ -157,6 +206,8 @@ class AssemblyAISTTStream extends EventEmitter implements STTStream {
         confidence: Number(confidence.toFixed(3)),
         words,
       });
+
+      if (isFinal) this.releaseFinalWaiters();
     }
   }
 }

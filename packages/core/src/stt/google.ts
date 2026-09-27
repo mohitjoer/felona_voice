@@ -6,6 +6,7 @@ import type {
   STTResult,
   AudioChunk,
 } from "../types.js";
+import { MissingCredentialsError } from "./credentials.js";
 
 export interface GoogleSTTOptions {
   apiKey: string;
@@ -31,6 +32,12 @@ export class GoogleSTT implements STTProvider {
   }
 
   createStream(options?: STTStreamOptions): STTStream {
+    if (!this.options.apiKey) {
+      throw new MissingCredentialsError(
+        "google",
+        'stt: { provider: "google", apiKey: process.env.GOOGLE_API_KEY }',
+      );
+    }
     return new GoogleSTTStream({
       ...this.options,
       languageCode: options?.language ?? this.options.languageCode ?? "en-US",
@@ -42,7 +49,9 @@ export class GoogleSTT implements STTProvider {
 class GoogleSTTStream extends EventEmitter implements STTStream {
   private chunks: Buffer[] = [];
   private resultHandler: ((result: STTResult) => void) | null = null;
+  private errorHandler: ((error: Error) => void) | null = null;
   private isClosed = false;
+  private inFlight: Promise<void> = Promise.resolve();
   private readonly config: GoogleSTTOptions & { keywords?: string[] };
 
   constructor(config: GoogleSTTOptions & { keywords?: string[] }) {
@@ -59,10 +68,31 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
     this.resultHandler = handler;
   }
 
-  async close(): Promise<void> {
-    if (this.isClosed) return;
-    this.isClosed = true;
+  onError(handler: (error: Error) => void): void {
+    this.errorHandler = handler;
+  }
 
+  private reportError(context: string, err: unknown): void {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (this.errorHandler) {
+      this.errorHandler(error);
+    } else {
+      console.error(`[STT/Google] ${context}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Recognize everything buffered so far.
+   *
+   * Google has no streaming endpoint, so the pipeline calls this when the user
+   * stops speaking to get a result mid-call.
+   */
+  async flush(): Promise<void> {
+    this.inFlight = this.inFlight.then(() => this.recognize());
+    await this.inFlight;
+  }
+
+  private async recognize(): Promise<void> {
     if (this.chunks.length === 0) return;
 
     const fullPcm = Buffer.concat(this.chunks);
@@ -72,7 +102,7 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
     if (fullPcm.length < 3200) return;
 
     const base64Audio = fullPcm.toString("base64");
-    const url = `https://speech.googleapis.com/v1/speech:recognize?key=${this.config.apiKey}`;
+    const url = `https://speech.googleapis.com/v1/speech:recognize?key=${encodeURIComponent(this.config.apiKey)}`;
 
     const speechContexts = this.config.keywords?.length
       ? [{ phrases: this.config.keywords }]
@@ -101,7 +131,7 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
 
       if (!res.ok) {
         const err = await res.text();
-        console.error(`[STT/Google] Recognition error ${res.status}: ${err}`);
+        this.reportError(`recognition error ${res.status}`, err);
         return;
       }
 
@@ -143,8 +173,14 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
         words,
       });
     } catch (err) {
-      console.error("[STT/Google] Transcription failed:", err);
+      this.reportError("transcription failed", err);
     }
+  }
+
+  async close(): Promise<void> {
+    if (this.isClosed) return;
+    this.isClosed = true;
+    await this.flush();
   }
 }
 

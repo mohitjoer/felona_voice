@@ -7,7 +7,7 @@ Felona Voice provides built-in, first-class support for telephone calls over mob
 ## ⚡ Key Highlights
 
 - **Native G.711 μ-law (PCMU) Transcoding**: Built-in, zero-dependency, microsecond bi-directional conversion between 8kHz μ-law phone audio and 16-bit linear PCM (8kHz, 16kHz, 24kHz, 48kHz).
-- **Sub-10ms Next-Action Routing**: JEV matches caller utterances semantically in ~5ms, eliminating awkward conversational pauses on phone calls.
+- **Instant Next-Action Routing**: JEV matches caller utterances with in-process cosine similarity — no model call in the routing path, so no conversational pause while waiting on one.
 - **Instant Barge-In / Interruption**: When a caller speaks over the agent, Felona Voice immediately sends a Twilio `clear` event to flush queued audio on the caller's mobile phone.
 - **Zero-Config TwiML Auto-Serving**: The built-in telephony server handles both the WebSocket stream (`/media`) and the HTTP voice webhook (`/voice`) with auto-generated TwiML.
 - **Express / Fastify / Next.js / Custom Server Compatible**: Easily pluggable into existing HTTP servers via `agent.handleTwilioWebSocket(ws, req)`.

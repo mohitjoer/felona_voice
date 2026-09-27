@@ -13,10 +13,14 @@ Welcome to the comprehensive documentation for **Felona Voice** — the ultra-lo
 | Guide | Description |
 | :--- | :--- |
 | **[Installation & Setup Guide](./INSTALLATION.md)** | Step-by-step installation for npm, pnpm, bun, yarn, TypeScript ESM config, and audio provider setup. |
-| **[Architecture & Core Principles](./ARCHITECTURE.md)** | Why Felona Voice is 100% LLM-free, ~5ms neural action routing, audio pipeline flow, and latency comparison. |
+| **[Architecture & Core Principles](./ARCHITECTURE.md)** | Why Felona Voice routes with in-process vectors instead of a model call, audio pipeline flow, and latency comparison. |
 | **[Complete API Reference](./API_REFERENCE.md)** | Exhaustive documentation of every class, function, method, interface, and configuration parameter. |
-| **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** | How to build stateful conversational graphs, directed edges, and fallback protection. |
-| **[Graph Visualization Guide](./VISUALIZATION_GUIDE.md)** | Generate instant Markdown (`.md`) diagrams, terminal ASCII flowcharts, and Mermaid diagrams via API or CLI. |
+| **[API Reference — VoiceGraph](./API_REFERENCE.md#1-voicegraphtstate--compiledvoicegraphtstate)** | How to build stateful conversational graphs with directed edges and fallback protection. |
+| **[API Reference — Visualization](./API_REFERENCE.md#4-visualization-functions-packagescoresrcgraphvisualizets)** | Generate instant Markdown (`.md`) diagrams, terminal ASCII flowcharts, and Mermaid diagrams via API or CLI. |
+| **[API Reference — MCP Tools](./API_REFERENCE.md#9-mcp-tool-support-packagessorctoolsmcpts)** | Borrow tools from any MCP server and use them like native ones. |
+| **[API Reference — OpenTelemetry](./API_REFERENCE.md#10-opentelemetry-tracing-packagessrcobservability)** | Span-per-turn tracing that stays a no-op until you register a provider. |
+| **[API Reference — WebRTC](./API_REFERENCE.md#11-webrtc-transport-packagessrctransportwebrtcts)** | Browser and mobile clients: signalling, PCMU/RTP audio, barge-in. |
+| **[API Reference — Call Analytics](./API_REFERENCE.md#8-call-analytics-packagessrcanalytics)** | Post-call outcome, sentiment and escalation scoring. |
 | **[Telephony & Twilio Guide](./TELEPHONY_TWILIO_GUIDE.md)** | Connect voice agents to mobile phone calls via Twilio Media Streams, G.711 μ-law transcoding, and TwiML. |
 
 ---
@@ -51,7 +55,7 @@ console.log(agent.drawMarkdown());
 
 ## 🌟 Core Concepts at a Glance
 
-1. **JEV Neural Routing**: Instead of passing conversational turns to a slow, costly LLM, JEV encodes user utterances into a semantic vector space and matches them against candidate actions via cosine similarity in **~5 milliseconds**.
+1. **JEV Vector Routing**: Instead of passing every conversational turn to a slow, costly model, JEV encodes user utterances into a vector space and matches them against candidate actions via cosine similarity — sub-millisecond, in-process, no API key required by default.
 2. **Deterministic & Safe**: Actions execute pure TypeScript/JavaScript code, database queries, or tool calls. No hallucinations, no unpredictable prompt drift.
 3. **Stateful Conversation Graphs**: Build stateful conversational workflows using `.addNode()`, `.addEdge()`, and `.invoke()`.
 4. **Markdown Native Visualization**: Generate diagrams that render automatically in GitHub, VS Code Markdown preview, and docs platforms with zero configuration.

@@ -5,6 +5,11 @@
  * Every provider, engine, and component implements interfaces defined here.
  */
 
+import type { TransferRequest } from "./telephony/transfer.js";
+import type { KnowledgeChunk } from "./knowledge/kb.js";
+import type { FelonaTracer } from "./observability/tracing.js";
+import type { AnalyzeOptions } from "./analytics/call-analysis.js";
+
 // ─── Audio ──────────────────────────────────────────────────────────────────
 
 /** Raw audio chunk flowing through the pipeline */
@@ -149,6 +154,22 @@ export interface AgentAction {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * The slice of the session manager exposed to action handlers.
+ *
+ * Declared here (rather than importing `SessionManager`) so that `types.ts`
+ * stays dependency-free and handlers can be written against a narrow
+ * contract. `SessionManager` satisfies this structurally.
+ */
+export interface SessionAccessor {
+  /** Read a slot value. */
+  getSlot(id: string, key: string): Promise<unknown>;
+  /** Write a slot value. */
+  setSlot(id: string, key: string, value: unknown): Promise<void>;
+  /** Read all slots. */
+  getSlots(id: string): Promise<Record<string, unknown>>;
+}
+
 /** Context passed to action handlers */
 export interface ActionContext {
   /** The full conversation context */
@@ -160,7 +181,31 @@ export interface ActionContext {
   /** The current session */
   session: Session;
   /** Session manager for multi-turn slot persistence & scaling */
-  sessions?: any;
+  sessions?: SessionAccessor;
+  /** Keypad digits collected so far for this turn, if any. */
+  dtmf?: string;
+  /**
+   * Search the agent's knowledge base.
+   *
+   * Omitted when no knowledge base is configured, so a handler can tell
+   * "no knowledge base" from "nothing found".
+   */
+  knowledge?: {
+    search: (
+      query: string,
+      options?: { topK?: number; minScore?: number },
+    ) => Promise<KnowledgeChunk[]>;
+  };
+
+  /**
+   * Hand the live call to a human or another line.
+   *
+   * Staged rather than immediate: the transfer runs after the handler's
+   * returned text has finished playing, so a warm transfer's introduction is
+   * actually heard before the line changes. Without this, an agent that says
+   * "connecting you now" gets cut off mid-sentence.
+   */
+  transfer?: (request: TransferRequest) => void;
 }
 
 /** Result of JEV action matching */
@@ -191,6 +236,13 @@ export interface Transport {
   sendAudio(sessionId: string, chunk: AudioChunk): Promise<void>;
   /** Optional: clear queued audio on telephony/mobile buffer (e.g. Twilio barge-in) */
   clearAudio?(sessionId: string): Promise<void>;
+  /**
+   * Optional: keypad digits pressed by the caller.
+   *
+   * Only telephony transports can supply these — tones are not speech, so they
+   * never reach the STT stream.
+   */
+  onDTMF?(handler: (sessionId: string, digit: string) => void): void;
 }
 
 export interface TransportOptions {
@@ -217,6 +269,12 @@ export interface STTStreamOptions {
   interimResults?: boolean;
   /** Custom vocabulary/keywords to boost */
   keywords?: string[];
+  /**
+   * How long `flush()` may wait for a final transcription result before
+   * giving up and returning (default: 1500ms). Keeps a stalled recognizer
+   * from blocking the conversation loop.
+   */
+  flushTimeoutMs?: number;
 }
 
 export interface STTStream {
@@ -224,6 +282,24 @@ export interface STTStream {
   write(chunk: AudioChunk): void;
   /** Register handler for transcription results */
   onResult(handler: (result: STTResult) => void): void;
+  /**
+   * Register a handler for stream-level failures (auth, network, protocol).
+   * Optional — streams that cannot fail recoverably may omit it.
+   *
+   * Note: this is deliberately *not* an `error` event, because emitting
+   * `error` on an EventEmitter with no listener throws and takes the
+   * process down.
+   */
+  onError?(handler: (error: Error) => void): void;
+  /**
+   * Resolve once the audio written so far has been transcribed and emitted
+   * as a final result. Called by the pipeline when the user stops speaking
+   * so the turn is not submitted on a partial transcript.
+   *
+   * Optional — streaming providers may omit it if finals already arrive
+   * before the caller's grace period elapses.
+   */
+  flush?(): Promise<void>;
   /** Close the stream */
   close(): Promise<void>;
 }
@@ -256,6 +332,126 @@ export interface TTSOptions {
   speed?: number;
   /** Voice pitch adjustment */
   pitch?: number;
+}
+
+// ─── Turn Handling ─────────────────────────────────────────────────────────
+
+/**
+ * How the pipeline decides the user has finished speaking.
+ *
+ * - `vad`  — energy/speech-detection hangover only (default, zero-dependency)
+ * - `stt`  — defer to the recognizer's own endpoint signal via `STTStream.flush()`
+ * - `auto` — use `stt` when the provider implements `flush()`, else `vad`
+ */
+export type TurnDetectionMode = "vad" | "stt" | "auto";
+
+export interface EndpointingOptions {
+  /** Turn detection source. Default: `auto` */
+  detection?: TurnDetectionMode;
+  /**
+   * Fixed mode: silence required after the last speech frame before the turn
+   * closes. Default: 800ms.
+   */
+  minDelayMs?: number;
+  /**
+   * Hard cap on how long the pipeline will wait for a turn to close once the
+   * user has clearly stopped. Default: 3000ms. Prevents a stuck VAD from
+   * silently swallowing a turn.
+   */
+  maxDelayMs?: number;
+  /**
+   * `dynamic` adapts the silence window within [minDelayMs, maxDelayMs] from
+   * observed pause statistics, so fast speakers are not cut off and slow
+   * speakers are not left waiting. Default: `fixed`.
+   */
+  mode?: "fixed" | "dynamic";
+}
+
+/**
+ * How the agent reacts when the user speaks over it.
+ */
+export interface InterruptionOptions {
+  /** Master switch. Default: true */
+  enabled?: boolean;
+  /**
+   * `immediate` stops playback on any detected speech.
+   * `adaptive` requires the speech to look like a real interruption —
+   * sustained for `minSpeechMs`, and (when `minWords > 0`) backed by at least
+   * that many transcribed words — so "uh-huh", a cough or background noise no
+   * longer silence the agent permanently.
+   */
+  mode?: "immediate" | "adaptive";
+  /** Minimum sustained speech before it counts as an interruption. Default: 500ms */
+  minSpeechMs?: number;
+  /**
+   * Minimum transcribed words before it counts as an interruption.
+   * Requires an STT provider that emits interim results. Default: 0.
+   */
+  minWords?: number;
+  /**
+   * Silence window after a candidate interruption before it is classified as
+   * false. If no transcript arrives within this, playback resumes from where it
+   * stopped. Default: 2000ms.
+   */
+  falseInterruptionTimeoutMs?: number;
+  /** Resume speaking when an interruption is classified as false. Default: true */
+  resumeOnFalseInterruption?: boolean;
+}
+
+/**
+ * Start deciding before the user's turn is fully confirmed.
+ *
+ * JEV routing begins as soon as a first final transcript arrives, overlapping
+ * the remaining endpointing wait. The in-flight decision is cancelled and
+ * redone if the transcript later changes, so a mutated utterance is never
+ * answered from a stale guess.
+ */
+export interface PreemptiveOptions {
+  /** Default: true */
+  enabled?: boolean;
+  /** Skip preemption for utterances longer than this. Default: 10000ms */
+  maxSpeechMs?: number;
+  /** Cap on preemption attempts per turn, to bound wasted work. Default: 3 */
+  maxRetries?: number;
+}
+
+/** A keypad digit received from the caller. */
+export interface DTMFEvent {
+  /** The digit pressed: 0-9, *, #, A-D. */
+  digit: string;
+  /** Session the digit belongs to. */
+  sessionId: string;
+  /** Milliseconds since the session started. */
+  timestampMs: number;
+}
+
+/** Keypad collection behaviour for one session. */
+export interface DTMFConfig {
+  /** Master switch. Default: true — digits are always surfaced. */
+  enabled?: boolean;
+  /**
+   * Digits that complete an entry (4 for a PIN). When reached, the collected
+   * digits are submitted as the turn's input so the agent responds to them.
+   */
+  expectedDigits?: number;
+  /** Digit that explicitly ends an entry, e.g. "#". */
+  terminateOn?: string;
+  /** Discard a partial entry after this long without a digit (ms). Default: 10000 */
+  idleTimeoutMs?: number;
+}
+
+/** Input audio conditioning applied before VAD/STT. */
+export interface AudioOptions {
+  /** Master switch. Default: true */
+  enabled?: boolean;
+  /** High-pass corner frequency in Hz. Default: 80 */
+  highPassHz?: number;
+  /** Noise gate strength, 0-1. 0 disables. Default: 0.06 */
+  noiseGate?: number;
+  /** Target RMS for automatic gain control, 0-1. 0 disables. Default: 0.06 */
+  targetRms?: number;
+  /** Maximum gain factor. Default: 8 */
+  maxGain?: number;
 }
 
 // ─── VAD (Voice Activity Detection) ─────────────────────────────────────────
@@ -412,20 +608,125 @@ export interface FelAgentConfig {
 
   /** JEV engine configuration */
   jev?: {
-    /** Embedding model/provider to use */
+    /**
+     * Embedding model/provider to use.
+     *
+     * Either an `EmbeddingProvider` instance, or one of the built-in names:
+     * `"fast-semantic"` (default, no API key required) or `"openai"`.
+     */
     embeddingProvider?: string | EmbeddingProvider;
+    /** API key for the `"openai"` embedding provider */
     embeddingApiKey?: string;
-    /** Path to a trained predictor model (ONNX) */
+    /**
+     * Path to a trained predictor model.
+     *
+     * Not supported in this release — configuring it makes `listen()` throw
+     * rather than silently degrading to cold-start routing.
+     */
     predictorModel?: string;
-    /** Minimum confidence threshold — below this, fall back to LLM-only */
+    /** Minimum confidence threshold — below this, route to the `fallback` action */
     confidenceThreshold?: number;
   };
+
+  /** Voice activity detection tuning (per-session VAD instances) */
+  vad?: {
+    /** RMS threshold to start detecting speech (0-1). Default: 0.01 */
+    speechThreshold?: number;
+    /** RMS threshold to stop detecting speech (0-1). Default: 0.005 */
+    silenceThreshold?: number;
+    /** Silence duration before a turn is considered finished (ms). Default: 800 */
+    hangoverMs?: number;
+    /** Minimum speech duration for a valid turn (ms). Default: 100 */
+    minSpeechMs?: number;
+  };
+
+  /** Turn detection and endpointing */
+  endpointing?: EndpointingOptions;
+
+  /** Barge-in / interruption behaviour */
+  interruption?: InterruptionOptions;
+
+  /** Begin routing before the user's turn is fully confirmed */
+  preemptive?: PreemptiveOptions;
+
+  /** Input audio conditioning (high-pass, noise gate, AGC) */
+  audio?: AudioOptions;
+
+  /** Keypad (DTMF) input handling */
+  dtmf?: DTMFConfig;
+
+  /**
+   * Retrieval over the agent's own documentation.
+   *
+   * Retrieval only: passages are returned to the handler, which decides the
+   * wording. Reuses the JEV embedding provider, so this costs no extra provider.
+   */
+  knowledge?: {
+    /** Retrieval options. */
+    topK?: number;
+    /** Similarity floor; below it the agent is told it does not know. Default: 0.2 */
+    minScore?: number;
+    /** Chunking strategy. */
+    chunk?: {
+      targetChars?: number;
+      minChars?: number;
+      maxChars?: number;
+      overlapChars?: number;
+    };
+  };
+
+  /**
+   * Call transfer credentials. Without these, `ctx.transfer()` is unavailable
+   * and the agent reports that it cannot escalate rather than pretending to.
+   */
+  transfers?: {
+    /** Twilio Account SID. */
+    accountSid: string;
+    /** Twilio Auth Token. */
+    authToken: string;
+    /** Override the Twilio API base URL. */
+    baseUrl?: string;
+  };
+
+  /**
+   * Speech language.
+   *
+   * Either a single BCP-47 tag (`"en-US"`, `"es-ES"`) or a list to accept
+   * several, in which case the recognizer auto-detects among them. This was
+   * previously hardcoded to `"en-US"` in the pipeline, so a non-English agent
+   * silently transcribed against the wrong model.
+   */
+  language?: string | string[];
+
+  /**
+   * How long to wait for a final transcript before submitting a turn (ms).
+   * Raise this for slow/batch STT providers. Default: 1500.
+   */
+  sttFlushTimeoutMs?: number;
 
   /** Actions the agent can take */
   actions: AgentAction[];
 
   /** Tools the agent can call */
   tools?: AgentTool[];
+
+  /**
+   * OpenTelemetry instrumentation for calls and tool calls.
+   *
+   * Omit to use the global OpenTelemetry tracer, which does nothing until the
+   * application registers a tracer provider. Inject one to control the
+   * instrumentation scope or to assert on spans in a test.
+   */
+  tracer?: FelonaTracer;
+
+  /**
+   * How to judge the call when it ends — which actions count as a successful
+   * ending, which count as an escalation, and a hook that reports the real
+   * outcome when your systems know it.
+   *
+   * Omit it and post-call analysis infers everything from the transcript.
+   */
+  analysis?: AnalyzeOptions;
 
   /** Lifecycle hooks */
   hooks?: AgentHooks;
@@ -438,6 +739,21 @@ export interface FelAgentConfig {
         host?: string;
         path?: string;
         streamUrl?: string;
+        greeting?: string;
+        /** Shared secret required from WebSocket clients */
+        authToken?: string;
+        /** Custom WebSocket upgrade check */
+        verifyClient?: (req: import("http").IncomingMessage) => boolean;
+        /** Heartbeat ping interval in ms (0 disables). Default: 30000 */
+        heartbeatIntervalMs?: number;
+        /** Max simultaneous connections */
+        maxConnections?: number;
+        /** Twilio auth token, for X-Twilio-Signature validation */
+        authTokenTwilio?: string;
+        /** Public base URL of this server, required for signature validation */
+        publicUrl?: string;
+        /** Restrict the TwiML webhook to these Host values */
+        allowedHosts?: string[];
         [key: string]: unknown;
       }
     | Transport;

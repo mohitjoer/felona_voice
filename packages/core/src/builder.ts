@@ -1,6 +1,7 @@
 import { FelAgent, defineAction } from "./agent.js";
 import type {
   AgentAction,
+  AgentTool,
   ActionContext,
   EmbeddingProvider,
   InteractOptions,
@@ -16,6 +17,12 @@ import type {
   VisualizeOptions,
   VisualizeResult,
 } from "./graph/visualize.js";
+import { createCollectTask, type CollectTaskOptions } from "./slots/tasks.js";
+import { createKnowledgeTask, type KnowledgeTaskOptions } from "./knowledge/task.js";
+import type { KnowledgeSearcher } from "./knowledge/kb.js";
+import type { McpClient } from "./tools/mcp.js";
+import type { AnalyzeOptions } from "./analytics/call-analysis.js";
+import type { FelonaTracer } from "./observability/tracing.js";
 
 export type ActionHandlerFn = (
   ctx: ActionContext
@@ -33,6 +40,15 @@ export class AgentBuilder {
   private transportConfig?: ({ type?: "websocket" | "twilio" | "webrtc"; port?: number; host?: string; path?: string; streamUrl?: string; [k: string]: unknown } | Transport);
   private sessionConfig?: SessionManagerOptions;
   private builtAgent?: FelAgent;
+  /** Knowledge tasks awaiting an agent to supply a knowledge base. */
+  private pendingKnowledgeTasks: Array<Omit<KnowledgeTaskOptions, "knowledge">> = [];
+  private pendingTools: AgentTool[] = [];
+  private pendingMcpClients: McpClient[] = [];
+  private analysisConfig?: AnalyzeOptions;
+  private tracerConfig?: FelonaTracer;
+  /** Action count the cached agent was built from, to detect a stale cache. */
+  private builtFromActionCount = -1;
+  private builtFromToolCount = -1;
 
   constructor(name = "Felona Agent") {
     this.agentName = name;
@@ -83,6 +99,59 @@ export class AgentBuilder {
     return this;
   }
 
+  /**
+   * Register a tool the LLM may call during a call.
+   *
+   * Tools are distinct from actions: an action is something JEV *predicts* and
+   * the agent *says*, a tool is something the LLM *calls* to get information it
+   * then speaks. A tool returns data; it does not produce the reply.
+   */
+  tool(tool: AgentTool): this {
+    if (this.pendingTools.some((t) => t.name === tool.name)) {
+      throw new Error(`Tool "${tool.name}" is already registered`);
+    }
+    this.pendingTools.push(tool);
+    return this;
+  }
+
+  /** Register several tools at once. Duplicate names throw. */
+  tools(toolList: AgentTool[]): this {
+    for (const t of toolList) this.tool(t);
+    return this;
+  }
+
+  /**
+   * Expose an MCP server's tools to the agent.
+   *
+   * `build()` is synchronous and listing an MCP server is not — the server is a
+   * subprocess that has to be asked over a pipe. So this records the server and
+   * you finish with {@link AgentBuilder.connectMcp} instead of `build()`.
+   */
+  mcp(client: McpClient): this {
+    if (this.pendingMcpClients.includes(client)) {
+      throw new Error("This MCP client is already registered on the agent");
+    }
+    this.pendingMcpClients.push(client);
+    return this;
+  }
+
+  /**
+   * Connect every registered MCP server, add its tools, and return the agent.
+   *
+   * A server that cannot be reached fails the whole call. Returning an agent
+   * that quietly lacks the tools it was promised is worse than an error, because
+   * the failure only shows up mid-conversation.
+   */
+  async connectMcp(): Promise<FelAgent> {
+    const agent = this.build();
+    for (const client of this.pendingMcpClients) {
+      // A duplicate name across two servers throws here rather than letting one
+      // silently shadow the other.
+      await client.registerInto(agent.toolRegistry);
+    }
+    return agent;
+  }
+
   /** Fallback action when JEV prediction is below confidence threshold */
   fallback(responseOrHandler?: string | ActionHandlerFn): this {
     const text = typeof responseOrHandler === "string" ? responseOrHandler : undefined;
@@ -93,6 +162,65 @@ export class AgentBuilder {
       "Fallback for out of scope questions, trivia, speech noise, or unhandled requests",
       fn || text || "Sorry, I am not able to understand. Could you please clarify?"
     );
+  }
+
+  /**
+   * Add a knowledge-base action.
+   *
+   * Searches the built agent's knowledge base and hands the passages to your
+   * `answer` function. The framework does not compose an answer for you — that
+   * keeps the reply exactly what you return, with no model in the loop.
+   *
+   * @example
+   * ```typescript
+   * const agent = createAgent("Support").build();
+   * await agent.knowledge.addAll([
+   *   { id: "returns", text: "Returns are accepted within 30 days." },
+   * ]);
+   *
+   * createAgent("Support")
+   *   .knowledgeTask({
+   *     answer: (results) =>
+   *       results.length
+   *         ? results[0].text
+   *         : "I'm not sure on that one — let me check and call you back.",
+   *   });
+   * ```
+   */
+  knowledgeTask(options: Omit<KnowledgeTaskOptions, "knowledge">): this {
+    // Deferred, not resolved here: the knowledge base belongs to the built
+    // agent, and building mid-chain would freeze the action list and silently
+    // drop anything added afterwards.
+    this.pendingKnowledgeTasks.push(options);
+    return this;
+  }
+
+  /**
+   * Add a slot-collection task — the flow for capturing a name, email, phone
+   * number, address or card details across several turns.
+   *
+   * The task becomes a normal action, so JEV routes to it by description. The
+   * handler returns the next question, and collected values are validated
+   * (including a Luhn check on card numbers) before being accepted.
+   *
+   * @example
+   * ```typescript
+   * createAgent("Checkout")
+   *   .action("start_order", "Begin a new order", "Let's get started.")
+   *   .collect({
+   *     id: "take_details",
+   *     slots: [
+   *       { name: "name", type: "name" },
+   *       { name: "email", type: "email" },
+   *       { name: "cardNumber", type: "cardNumber" },
+   *     ],
+   *     onComplete: (s) => `Thanks ${s.name}, order confirmed.`,
+   *   });
+   * ```
+   */
+  collect(options: CollectTaskOptions): this {
+    this.actionList.push(createCollectTask(options));
+    return this;
   }
 
   /** Set STT provider directly or by configuration */
@@ -238,6 +366,39 @@ export class AgentBuilder {
     return this;
   }
 
+  /**
+   * Instrument calls with a specific OpenTelemetry tracer.
+   *
+   * Omit it and the agent uses the global OpenTelemetry tracer, which does
+   * nothing until your application registers a provider. Pass one to control
+   * the instrumentation scope, or to assert on spans in a test.
+   */
+  tracer(tracer: FelonaTracer): this {
+    this.tracerConfig = tracer;
+    return this;
+  }
+
+  /**
+   * Tell the agent how to judge a call when it ends.
+   *
+   * Post-call analysis can only infer an outcome from the transcript on its own.
+   * Naming the actions that end well — or passing `resolve` when your systems
+   * know the real outcome — is what makes the result trustworthy enough to bill
+   * or escalate on.
+   *
+   * ```typescript
+   * createAgent("Support")
+   *   .analysis({
+   *     successActions: ["order_confirmed", "refund_issued"],
+   *     escalationActions: ["transfer_human"],
+   *   })
+   * ```
+   */
+  analysis(options: AnalyzeOptions): this {
+    this.analysisConfig = options;
+    return this;
+  }
+
   /** Set minimum confidence threshold (0 to 1, default 0.35) */
   threshold(threshold: number): this {
     this.confidenceThreshold = threshold;
@@ -246,12 +407,48 @@ export class AgentBuilder {
 
   /** Build and return the initialized FelAgent instance */
   build(): FelAgent {
-    if (this.builtAgent) return this.builtAgent;
+    // A cached agent is only valid for the action list it was built from.
+    // Without this check, any action added after an early build() is silently
+    // ignored.
+    if (
+      this.builtAgent &&
+      this.builtFromActionCount === this.actionList.length &&
+      this.builtFromToolCount === this.pendingTools.length
+    ) {
+      return this.builtAgent;
+    }
+    this.builtAgent = undefined;
 
     // Ensure fallback exists
-    const hasFallback = this.actionList.some((a) => a.id === "fallback");
-    if (!hasFallback) {
+    if (!this.actionList.some((a) => a.id === "fallback")) {
       this.fallback();
+    }
+
+    // Knowledge tasks are declared before the agent that owns the knowledge
+    // base exists. Each is wired through a holder resolved immediately after
+    // construction, so no half-initialized base is captured and nothing relies
+    // on the action array being mutated behind the agent's back.
+    const knowledgeHolders: Array<{ searcher: KnowledgeSearcher | null }> = [];
+
+    for (const options of this.pendingKnowledgeTasks) {
+      const holder: { searcher: KnowledgeSearcher | null } = { searcher: null };
+      knowledgeHolders.push(holder);
+
+      this.actionList.push(
+        createKnowledgeTask({
+          ...options,
+          knowledge: {
+            search: (query, searchOptions) => {
+              if (!holder.searcher) {
+                throw new Error(
+                  "Knowledge base is unavailable — the agent was not built correctly.",
+                );
+              }
+              return holder.searcher.search(query, searchOptions);
+            },
+          },
+        }),
+      );
     }
 
     const agent = new FelAgent({
@@ -266,7 +463,14 @@ export class AgentBuilder {
       },
       transport: this.transportConfig,
       sessions: this.sessionConfig,
+      tools: this.pendingTools,
+      analysis: this.analysisConfig,
+      tracer: this.tracerConfig,
     });
+
+    for (const holder of knowledgeHolders) {
+      holder.searcher = agent.knowledge;
+    }
 
     // Populate initial slots into agent memory
     for (const [k, v] of Object.entries(this.slots)) {
@@ -274,10 +478,12 @@ export class AgentBuilder {
     }
 
     this.builtAgent = agent;
+    this.builtFromActionCount = this.actionList.length;
+    this.builtFromToolCount = this.pendingTools.length;
     return agent;
   }
 
-  /** Direct interaction shortcut: simulates a turn without needing to call build() first */
+    /** Direct interaction shortcut: simulates a turn without needing to call build() first */
   async interact(input: string | InteractOptions): Promise<InteractResult> {
     return this.build().interact(input);
   }
@@ -439,8 +645,14 @@ export function createSupportAgent(options?: {
   slots?: Record<string, unknown>;
   deepgramApiKey?: string;
   embeddingProvider?: EmbeddingProvider;
+  /**
+   * E.164 or SIP destination for supervisor escalations. Without it the agent
+   * tells the caller it cannot transfer rather than claiming to.
+   */
+  escalationNumber?: string;
 }): AgentBuilder {
   const company = options?.companyName ?? "Acme Support";
+  const escalationNumber = options?.escalationNumber ?? "";
 
   const builder = createAgent(company)
     .system(`You are an empathetic, concise customer support agent for ${company}. Assist callers with orders, devices, returns, and escalation.`)
@@ -487,9 +699,36 @@ export function createSupportAgent(options?: {
     )
     .action(
       "escalate_supervisor",
-      "Customer is frustrated, demands human intervention, speaks with manager, or asks for a supervisor",
-      async () => {
-        return `I apologize for the frustration. I am escalating this call immediately to our Senior Support Lead on duty. Please stay on the line while I connect you.`;
+      "Customer is frustrated, demands human intervention, speaks with a manager, or asks for a supervisor",
+      async (ctx) => {
+        // Only claim a handoff when one can actually happen. Telling a caller
+        // they are being connected while doing nothing is worse than saying no.
+        if (!ctx.transfer) {
+          return "I can pass your details to a human colleague, " +
+            "but this agent is not connected to a transfer service right now. " +
+            "Would you like me to note the issue for a callback instead?";
+        }
+
+        const orderId = (ctx.memory.getSlot("orderId") as string) ?? "";
+        const name = (ctx.memory.getSlot("customerName") as string) ?? "the customer";
+
+        // Warm transfer: this introduction is spoken in full before the line
+        // changes, and the receiving agent gets the context as SIP headers.
+        ctx.transfer({
+          mode: "warm",
+          to: escalationNumber,
+          message:
+            `I'm transferring you now to a senior support lead who can help directly. ` +
+            (orderId ? `Your order reference is ${orderId}. ` : "") +
+            "Please hold for just a moment.",
+          context: {
+            reason: "customer requested a supervisor",
+            customerName: name,
+            ...(orderId ? { orderId } : {}),
+          },
+        });
+
+        return "Let me get a colleague for you.";
       }
     )
     .action(

@@ -195,6 +195,6 @@ Felona Voice automatically checks if `onnxruntime-node` is present and enables h
 
 ## 📚 Next Steps
 
-- Check out the **[Architecture & Core Principles](./ARCHITECTURE.md)** to understand how JEV predicts actions in ~5ms.
+- Check out the **[Architecture & Core Principles](./ARCHITECTURE.md)** to understand how JEV routes actions without a model call.
 - Explore the **[Complete API Reference](./API_REFERENCE.md)** for full class and configuration details.
 - Read the **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** to build stateful conversational graphs.

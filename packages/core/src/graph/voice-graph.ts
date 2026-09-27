@@ -14,7 +14,6 @@ import {
 } from "./visualize.js";
 import type {
   AgentAction,
-  ConversationContext,
   EmbeddingProvider,
   Session,
 } from "../types.js";
@@ -76,6 +75,9 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
   private readonly defaultState: TState;
   private readonly sessionStateMap = new Map<string, { state: TState; memory: ConversationMemory; currentNode?: string }>();
 
+  /** Upper bound on concurrently tracked graph sessions (LRU eviction). */
+  private static readonly MAX_SESSIONS = 1000;
+
   constructor(options: {
     nodes: Map<string, NodeOptions<TState>>;
     edges: Map<string, Set<string>>;
@@ -88,6 +90,15 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
     this.entryPoint = options.entryPoint;
     this.jevEngine = options.jevEngine;
     this.defaultState = options.initialState;
+  }
+
+  /**
+   * `START` / `END` are structural markers, not actions. They must never be
+   * embedded into the action space or selected as a routing target, otherwise
+   * JEV can "route" a caller into a sentinel.
+   */
+  private isRoutable(id: string): boolean {
+    return id !== START && id !== END;
   }
 
   /**
@@ -105,6 +116,11 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
         currentNode: undefined,
       };
       this.sessionStateMap.set(sessionId, session);
+      this.evictOldestSessions(sessionId);
+    } else {
+      // Refresh insertion order so eviction is least-recently-used.
+      this.sessionStateMap.delete(sessionId);
+      this.sessionStateMap.set(sessionId, session);
     }
 
     // Merge any updated state passed in input
@@ -117,13 +133,14 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
     // 1. Check constrained edge candidates
     let allowedNodeIds: string[];
     if (session.currentNode && this.edges.has(session.currentNode) && (this.edges.get(session.currentNode)!.size > 0)) {
-      allowedNodeIds = Array.from(this.edges.get(session.currentNode)!);
+      allowedNodeIds = Array.from(this.edges.get(session.currentNode)!)
+        .filter((id) => this.isRoutable(id));
       // Always allow fallback if defined
       if (this.nodes.has("fallback") && !allowedNodeIds.includes("fallback")) {
         allowedNodeIds.push("fallback");
       }
     } else {
-      allowedNodeIds = Array.from(this.nodes.keys());
+      allowedNodeIds = Array.from(this.nodes.keys()).filter((id) => this.isRoutable(id));
     }
 
     // 2. Build conversational context for JEV
@@ -146,6 +163,13 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
       selectedNodeId = bestAllowed ? bestAllowed.actionId : (this.nodes.has("fallback") ? "fallback" : allowedNodeIds[0]);
     }
 
+    // Report the confidence of the node that actually ran. When edge
+    // constraints demote the top match, reusing `match.confidence` would
+    // attribute a high score to a node the user did not route to — poisoning
+    // both the returned telemetry and any training data built from it.
+    const selectedCandidate = match.candidates.find((c) => c.actionId === selectedNodeId);
+    const confidence = selectedCandidate?.score ?? match.confidence;
+
     const nodeDef = this.nodes.get(selectedNodeId) || this.nodes.get(this.entryPoint) || this.nodes.get("fallback")!;
     session.currentNode = selectedNodeId;
 
@@ -160,7 +184,7 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
       message,
       state,
       history: historyList,
-      confidence: match.confidence,
+      confidence,
       candidates: match.candidates,
     };
 
@@ -190,13 +214,13 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
       content: responseText,
       timestampMs: Date.now(),
       actionId: selectedNodeId,
-      confidence: match.confidence,
+      confidence,
     });
 
     return {
       response: responseText,
       node: selectedNodeId,
-      confidence: Number(match.confidence.toFixed(4)),
+      confidence: Number(confidence.toFixed(4)),
       state,
       candidates: match.candidates.map((c) => ({
         actionId: c.actionId,
@@ -307,32 +331,31 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
   }
 
   /**
-   * Convert compiled graph into a full FelAgent ready for live audio WebSocket streaming.
+   * Convert the compiled graph into a FelAgent ready for live audio streaming.
+   *
+   * The graph — not the agent — stays the source of truth for flow. Each action
+   * delegates to `invoke()`, so edge constraints and per-session graph state are
+   * preserved. The agent's own JEV pass supplies the action space (and therefore
+   * the utterance descriptions JEV embeds); routing decisions that matter are
+   * made by the graph.
    */
   toAgent(agentOptions?: { name?: string; sttApiKey?: string; ttsApiKey?: string }): FelAgent {
-    const actions: AgentAction[] = Array.from(this.nodes.entries()).map(([id, opt]) =>
+    const routable = Array.from(this.nodes.entries()).filter(
+      ([id]) => id !== START && id !== END,
+    );
+
+    const actions: AgentAction[] = routable.map(([id, opt]) =>
       defineAction({
         id,
         description: `${id}: ${opt.description}`,
         handler: async (ctx) => {
-          const runCtx: GraphRunContext<TState> = {
+          const out = await this.invoke({
             message: ctx.conversation.currentUtterance,
-            state: ctx.memory.getSlots() as TState,
-            history: ctx.memory.getRecentTurns(20).map((t) => ({
-              role: t.role as "user" | "agent",
-              content: t.content,
-              node: t.actionId,
-            })),
-            confidence: 0.95,
-            candidates: [],
-          };
-          if (typeof opt.run === "string") return opt.run;
-          const res = await opt.run(runCtx.state, runCtx);
-          if (typeof res === "string") return res;
-          if (typeof res === "object" && res?.response) return res.response;
-          return `Action completed: ${id}`;
+            sessionId: ctx.session.id,
+          });
+          return out.response;
         },
-      })
+      }),
     );
 
     return new FelAgent({
@@ -341,6 +364,44 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
       stt: agentOptions?.sttApiKey ? { provider: "deepgram", apiKey: agentOptions.sttApiKey } : undefined,
       tts: agentOptions?.ttsApiKey ? { provider: "deepgram", apiKey: agentOptions.ttsApiKey, voice: "aura-asteria-en" } : undefined,
     });
+  }
+
+  /**
+   * Drop the least-recently-used graph sessions.
+   *
+   * A long-lived server would otherwise accumulate one memory + state object per
+   * distinct sessionId, with no expiry.
+   */
+  private evictOldestSessions(keep: string): void {
+    while (this.sessionStateMap.size > CompiledVoiceGraph.MAX_SESSIONS) {
+      const oldest = this.sessionStateMap.keys().next();
+      if (oldest.done || oldest.value === keep) return;
+      this.sessionStateMap.delete(oldest.value);
+    }
+  }
+
+  /**
+   * Discard state for a graph session, or all of them.
+   * Graph state lives only in memory for the lifetime of the compiled graph.
+   */
+  reset(sessionId?: string): void {
+    if (sessionId) {
+      this.sessionStateMap.delete(sessionId);
+      return;
+    }
+    this.sessionStateMap.clear();
+  }
+
+  /**
+   * The node the session is currently in (undefined at the entry point).
+   */
+  getCurrentNode(sessionId = "default"): string | undefined {
+    return this.sessionStateMap.get(sessionId)?.currentNode;
+  }
+
+  /** Number of graph sessions held in memory. */
+  get sessionCount(): number {
+    return this.sessionStateMap.size;
   }
 }
 
@@ -541,13 +602,19 @@ export class VoiceGraph<TState extends Record<string, unknown> = Record<string, 
       confidenceThreshold: this.confidenceThreshold,
     });
 
-    const agentActions: AgentAction[] = Array.from(this.nodes.entries()).map(([id, opt]) =>
-      defineAction({
-        id,
-        description: `${id}: ${opt.description}`,
-        handler: async () => (typeof opt.run === "string" ? opt.run : `Node ${id}`),
-      })
-    );
+    // Only real nodes belong in the action space — START/END are structural
+    // markers and must never be routable targets.
+    const agentActions: AgentAction[] = Array.from(this.nodes.entries())
+      .filter(([id]) => id !== START && id !== END)
+      .map(([id, opt]) =>
+        defineAction({
+          id,
+          description: `${id}: ${opt.description}`,
+          // The action space only supplies embeddings; execution happens in
+          // CompiledVoiceGraph.invoke(), which also enforces edge constraints.
+          handler: async () => (typeof opt.run === "string" ? opt.run : `Node ${id}`),
+        }),
+      );
 
     await jevEngine.initialize(agentActions);
 

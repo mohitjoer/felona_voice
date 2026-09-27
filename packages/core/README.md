@@ -40,7 +40,7 @@ console.log(reply.action.id); // "room_service"
 ## Features
 
 - **JEV Routing**: Sub-10ms neural intent routing via local fast semantic embeddings or OpenAI embeddings.
-- **Pure JavaScript Execution**: Deterministic responses without LLM latency, token cost, or hallucinations.
+- **Deterministic Routing**: Cosine similarity over in-process vectors — no model call, no token cost, and no invented transitions. Low-confidence matches route to your `fallback` action.
 - **Pluggable Audio Stack**:
   - **STT**: Deepgram Nova-2, OpenAI Whisper, AssemblyAI, Azure Speech, Google Cloud Speech.
   - **TTS**: Cartesia Sonic (<100ms), Deepgram Aura, ElevenLabs, OpenAI Speech, Azure Speech, Amazon Polly, LMNT.

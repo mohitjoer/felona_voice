@@ -2,23 +2,25 @@
 
 Felona Voice is designed from the ground up for **ultra-low-latency, real-time voice interactions**.
 
-Unlike traditional conversational AI frameworks that rely on large language models (LLMs) to decide both *what* to do and *how* to respond, Felona Voice decouples conversational intent from generative text.
+Felona Voice lets you decide *what* to do separately from *how* to respond. JEV (Joint Embedding Vectors) routes the conversation, and an action handler produces the reply. The framework does not require a language model — but it does not prevent you from calling one inside a handler, which is the recommended pattern when replies need free-form language.
 
 ---
 
-## 🚫 Why 100% LLM-Free?
+## 🎯 Why Route with Vectors?
 
 In voice applications, **latency is everything**. Humans perceive conversational gaps larger than 200–300 milliseconds as awkward or unresponsive.
 
-| Dimension | LLM-Centric Voice Agents | Felona Voice (JEV Engine) |
+| Dimension | LLM-Decides-Everything Agents | Felona Voice (JEV Engine) |
 | :--- | :--- | :--- |
-| **Decision Latency** | 400ms – 1,200ms per turn | **~5ms** (Cosine Semantic Space) |
-| **Cost** | Expensive input/output token pricing | **$0.00** runtime model inference |
-| **Predictability** | Prone to hallucinations and prompt injection | **100% Deterministic** node execution |
-| **Dependencies** | Requires external LLM API keys | **Zero external dependencies** (local embeddings) |
-| **Debugging** | Hard to trace prompt logic | Clear state graph transitions & candidate scores |
+| **Routing Latency** | 400ms – 1,200ms per turn | **Sub-millisecond** (in-process cosine similarity over 128-d vectors) |
+| **Cost** | Input/output token pricing per turn | **$0.00** for routing with the built-in provider |
+| **Predictability** | Prone to hallucinating a transition that does not exist | Routing is **deterministic**; below-threshold matches go to `fallback` |
+| **Dependencies** | Requires a model API for routing | **None** for routing (built-in embedding provider, no API key) |
+| **Debugging** | Hard to trace prompt logic | Inspectable candidate scores, confidence and latency per turn |
 
-**In Felona Voice, JEV decides what action/node to take in ~5ms. The action handler executes clean TypeScript code and returns the exact speech string to TTS immediately.**
+**JEV decides which action to take, then the action handler returns the exact string handed to TTS.** If that handler calls an LLM to phrase the reply, you pay the LLM's latency there — JEV only removes it from the *routing* decision.
+
+> **On the "~5ms neural routing" claim.** The built-in `FastSemanticEmbeddingProvider` is a deterministic lexical embedder — weighted keyword anchors, character 3-grams and word hashes — not a neural network. Routing is fast because it is in-process arithmetic, not because a model runs. Swap in `jev.embeddingProvider: "openai"` (or your own `EmbeddingProvider`) for neural embeddings; that moves the cost to the embedding API.
 
 ---
 
@@ -36,7 +38,7 @@ Audio In (PCM16)
 └──────────────┘
        ↓
 ┌──────────────┐
-│  JEV Engine  │  → Embeds utterance & matches next action in ~5ms
+│  JEV Engine  │  → Embeds utterance & matches next action (sub-ms)
 └──────────────┘
        ↓
 ┌──────────────┐
@@ -72,6 +74,8 @@ Every subsystem in Felona Voice implements clean, modular TypeScript interfaces 
 - **STT (Speech-to-Text)**: Pluggable `STTProvider` (Built-in: Deepgram streaming WebSocket).
 - **TTS (Text-to-Speech)**: Pluggable `TTSProvider` (Built-in: Deepgram Aura, ElevenLabs HTTP streaming).
 - **VAD (Voice Activity Detection)**: Built-in zero-dependency `EnergyVAD` with automatic silence thresholds.
-- **Transport**: Pluggable `Transport` (Built-in: `WebSocketTransport` for bidirectional binary PCM audio).
+- **Transport**: Pluggable `Transport` (Built-in: `WebSocketTransport` for bidirectional binary PCM audio, `WebRTCTransport` for browser/mobile clients, `TwilioTransport` for telephony).
+- **Tools**: `ToolRegistry` for native tools, plus `McpClient` for tools borrowed from any MCP server over JSON-RPC.
+- **Observability**: `FelonaTracer` emits OpenTelemetry spans for turns, routing decisions, handlers, tool calls and TTS. No-op until an application registers a tracer provider.
 - **Embeddings**: Pluggable `EmbeddingProvider` (Built-in: `FastSemanticEmbeddingProvider` with zero configuration, or `OpenAIEmbeddingProvider`).
 - **Memory**: `ConversationMemory` manages sliding-window conversation turns and key-value state slots.
