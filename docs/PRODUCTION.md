@@ -156,6 +156,13 @@ new FelAgent({
 });
 ```
 
+Guardrails apply to **both** input paths: the voice pipeline and
+`agent.interact()`. `interact()` bypasses the pipeline, so if you expose it over
+HTTP it needed its own check — one did not exist before v3.0.0, so an operator
+who configured guardrails and used `interact()` was unprotected on that path.
+A blocked `interact()` returns an action of id `__blocked__` and
+`confidence: 0`, so a blocked turn is distinguishable from a real route.
+
 - **Input** guardrails run after the transcript is final and before anything
   routes, retrieves, or calls a tool.
 - **Output** guardrails run after the turn is committed and before a single word

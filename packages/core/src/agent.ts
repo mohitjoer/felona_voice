@@ -1,5 +1,10 @@
 import { defaultMetrics, registerCallMetrics, type MetricsRegistry } from "./observability/metrics.js";
 import { createCostTracker, type CostTracker } from "./observability/cost.js";
+import {
+  defaultInputBlockedText,
+  defaultOutputBlockedText,
+  runGuardrails,
+} from "./guardrails/index.js";
 import { EventEmitter } from "node:events";
 import type {
   FelAgentConfig,
@@ -1019,6 +1024,19 @@ export class FelAgent extends EventEmitter {
     return run;
   }
 
+  /**
+   * Stand-in action returned when a guardrail blocks.
+   *
+   * `InteractResult.action` is a required `AgentAction`, so a blocked turn
+   * still has to name something. A distinct id means a caller can tell a
+   * blocked turn from a real route without inspecting the text.
+   */
+  private static readonly BLOCKED_ACTION: AgentAction = {
+    id: "__blocked__",
+    description: "Turn blocked by a guardrail before it was routed",
+    handler: async () => "",
+  };
+
   private async runInteractTurn(
     sessionId: string,
     opts: InteractOptions,
@@ -1048,6 +1066,39 @@ export class FelAgent extends EventEmitter {
     }
 
     const { session, memory } = sessionEntry;
+
+    // Input guardrail, before routing, retrieval or any tool call.
+    //
+    // `interact()` bypasses the voice pipeline, so without this an operator who
+    // configured guardrails and exposed interact() over HTTP would believe they
+    // were protected on a path where they are not.
+    const inputVerdict = await runGuardrails(this.config.guardrails?.input, {
+      text: opts.userMessage,
+      session,
+    });
+    if (inputVerdict.blocked) {
+      this.logger.log(
+        "warn",
+        `interact() input blocked by guardrail: ${inputVerdict.reason ?? "unspecified"}`,
+      );
+      this.metrics.increment("felona_guardrail_blocks_total", 1, { side: "input" });
+      this.emitSafe("guardrailBlocked", {
+        sessionId,
+        side: "input",
+        reason: inputVerdict.reason,
+      });
+      return {
+        text:
+          inputVerdict.replacement ??
+          this.config.guardrails?.onInputBlocked ??
+          defaultInputBlockedText(),
+        action: FelAgent.BLOCKED_ACTION,
+        confidence: 0,
+        candidates: [],
+        slots: memory.getSlots(),
+        telemetry: { latencyMs: 0, actionSpaceSize: this.config.actions.length, embeddingModel: this.jev.providerName },
+      };
+    }
 
     // Apply custom slots if provided
     if (opts.slots) {
@@ -1098,6 +1149,31 @@ export class FelAgent extends EventEmitter {
     } catch (err) {
       this.logger.log("error", `Action handler failed for "${match.action.id}": ${err}`);
       responseText = "I encountered an issue processing that request.";
+    }
+
+    // Output guardrail, before the reply is returned to the caller. The voice
+    // path checks this before speaking; interact() returns text directly, so
+    // the same control has to be applied here.
+    const outputVerdict = await runGuardrails(this.config.guardrails?.output, {
+      text: responseText,
+      session,
+      actionId: match.action.id,
+    });
+    if (outputVerdict.blocked) {
+      this.logger.log(
+        "warn",
+        `interact() output blocked by guardrail: ${outputVerdict.reason ?? "unspecified"}`,
+      );
+      this.metrics.increment("felona_guardrail_blocks_total", 1, { side: "output" });
+      this.emitSafe("guardrailBlocked", {
+        sessionId,
+        side: "output",
+        reason: outputVerdict.reason,
+      });
+      responseText =
+        outputVerdict.replacement ??
+        this.config.guardrails?.onOutputBlocked ??
+        defaultOutputBlockedText();
     }
 
     // Record agent turn in memory

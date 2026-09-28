@@ -809,3 +809,79 @@ describe("builder.llm history", () => {
     expect(texts).not.toContain("where is it now");
   });
 });
+
+describe("interact() honours guardrails", () => {
+  const build = (guardrails: Record<string, unknown>) =>
+    new FelAgent({
+      name: "t",
+      systemPrompt: "t",
+      stt: { provider: "deepgram", apiKey: "k" },
+      tts: { provider: "deepgram", apiKey: "k" },
+      guardrails,
+      actions: [
+        defineAction({ id: "order", description: "check an order status", handler: async () => "shipped" }),
+        defineAction({ id: "fallback", description: "anything else", handler: async () => "ok" }),
+      ],
+    });
+
+  it("blocks input before the handler runs", async () => {
+    let ran = false;
+    const agent = new FelAgent({
+      name: "t", systemPrompt: "t",
+      stt: { provider: "deepgram", apiKey: "k" },
+      tts: { provider: "deepgram", apiKey: "k" },
+      guardrails: { input: [() => ({ action: "block", reason: "nope" })] },
+      actions: [defineAction({ id: "a", description: "do a thing", handler: async () => { ran = true; return "ok"; } })],
+    });
+    const result = await agent.interact({ userMessage: "anything", sessionId: "s" });
+    // interact() bypasses the voice pipeline, so this control was silently
+    // absent on a path the docs advertise for HTTP endpoints.
+    expect(ran).toBe(false);
+    expect(result.action.id).toBe("__blocked__");
+    expect(result.confidence).toBe(0);
+    await agent.stop();
+  });
+
+  it("blocks output after the handler runs", async () => {
+    const agent = build({ output: [() => ({ action: "block", reason: "policy" })] });
+    const result = await agent.interact({ userMessage: "where is my order", sessionId: "s" });
+    expect(result.text).not.toBe("shipped");
+    expect(result.text).toMatch(/can't say/i);
+    await agent.stop();
+  });
+
+  it("uses a custom replacement when supplied", async () => {
+    const agent = build({ input: [() => ({ action: "block", reason: "x", speak: "Ask your bank." })] });
+    const result = await agent.interact({ userMessage: "card number", sessionId: "s" });
+    expect(result.text).toBe("Ask your bank.");
+    await agent.stop();
+  });
+
+  it("prefers the agent-level onInputBlocked text", async () => {
+    const agent = build({
+      input: [() => ({ action: "block", reason: "x" })],
+      onInputBlocked: "I can't help with that one.",
+    });
+    const result = await agent.interact({ userMessage: "anything", sessionId: "s" });
+    expect(result.text).toBe("I can't help with that one.");
+    await agent.stop();
+  });
+
+  it("increments the metric with the side", async () => {
+    const agent = build({ input: [() => ({ action: "block", reason: "x" })] });
+    // defaultMetrics is process-wide, so assert the delta rather than an
+    // absolute value that other tests in this file also increment.
+    const before = agent.metrics.get("felona_guardrail_blocks_total", { side: "input" });
+    await agent.interact({ userMessage: "anything", sessionId: "s" });
+    const after = agent.metrics.get("felona_guardrail_blocks_total", { side: "input" });
+    expect(after).toBe(before + 1);
+    await agent.stop();
+  });
+
+  it("passes through when no guardrail blocks", async () => {
+    const agent = build({ input: [() => ({ action: "allow" })] });
+    const result = await agent.interact({ userMessage: "where is my order", sessionId: "s" });
+    expect(result.text).toBe("shipped");
+    await agent.stop();
+  });
+});
