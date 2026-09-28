@@ -9,6 +9,9 @@ import type { TransferRequest } from "./telephony/transfer.js";
 import type { KnowledgeChunk } from "./knowledge/kb.js";
 import type { FelonaTracer } from "./observability/tracing.js";
 import type { AnalyzeOptions } from "./analytics/call-analysis.js";
+import type { GuardrailOptions } from "./guardrails/index.js";
+import type { CallCost, PriceTable } from "./observability/cost.js";
+import type { VoicemailOptions } from "./voicemail/index.js";
 
 // ─── Audio ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +94,14 @@ export interface SessionStore {
 export interface SessionManagerOptions {
   /** Pluggable store instance (defaults to MemorySessionStore) */
   store?: SessionStore;
-  /** Maximum concurrent active sessions (useful for scaling & rate limits) */
+  /**
+   * Maximum concurrent active sessions.
+   *
+   * Default: 100. Each live call holds a pipeline, a VAD, a preprocessor, an
+   * STT socket and conversation memory, so an unbounded default means one
+   * process will accept as many calls as the network offers and then fall over
+   * on memory and CPU. Set this to your per-instance capacity.
+   */
   maxConcurrent?: number;
   /** Session inactivity timeout / TTL in milliseconds (default: 30 minutes) */
   ttlMs?: number;
@@ -172,6 +182,19 @@ export interface SessionAccessor {
 
 /** Context passed to action handlers */
 export interface ActionContext {
+  /**
+   * Aborted when the caller interrupts mid-turn.
+   *
+   * Pass it to anything slow and cancellable — an LLM stream, a tool call, a
+   * database round trip. Without it, work started for a turn the caller just
+   * interrupted still runs to completion: the tokens are billed and the latency
+   * is paid, but the result is discarded because the agent has stopped
+   * speaking.
+   *
+   * This is the difference between a barge-in costing one already-streamed
+   * sentence and a barge-in costing a full completion.
+   */
+  signal?: AbortSignal;
   /** The full conversation context */
   conversation: ConversationContext;
   /** Tool executor for calling external tools */
@@ -182,6 +205,29 @@ export interface ActionContext {
   session: Session;
   /** Session manager for multi-turn slot persistence & scaling */
   sessions?: SessionAccessor;
+  /**
+   * Reports token usage for this turn, so cost tracking can attribute it.
+   *
+   * A handler that calls an LLM has to say what it used: the pipeline cannot
+   * see inside the provider. Without this the largest single cost driver in a
+   * voice agent is unmeasured.
+   */
+  reportUsage?: (usage: { promptTokens: number; completionTokens: number }) => void;
+  /**
+   * Replaces the system prompt for subsequent turns.
+   *
+   * Takes effect from the next turn; the turn in flight still answers under the
+   * prompt it began with. Omitted when the agent's prompt is fixed.
+   */
+  setSystemPrompt?: (prompt: string) => void;
+  /**
+   * Ends the call at the transport level.
+   *
+   * The telephony-agnostic way for a handler to hang up: a voicemail
+   * detector, an after-hours rule, or a compliance stop. Omitted when the
+   * transport cannot end a call.
+   */
+  hangup?: () => Promise<void>;
   /** Keypad digits collected so far for this turn, if any. */
   dtmf?: string;
   /**
@@ -226,6 +272,17 @@ export interface Transport {
   start(options: TransportOptions): Promise<void>;
   /** Stop the transport */
   stop(): Promise<void>;
+  /**
+   * Optional: tear down a single session, leaving the transport and every
+   * other call running.
+   *
+   * Distinct from `stop()`, which is process-wide. Anything that ends one call
+   * rather than the whole service must use this: calling `stop()` to hang up
+   * one caller drops every other caller on the process and shuts the server
+   * down. Transports that can address an individual session should implement
+   * it; those that cannot leave it undefined and the caller falls back.
+   */
+  closeSession?(sessionId: string): Promise<void>;
   /** Register handler for incoming audio */
   onAudioChunk(handler: (sessionId: string, chunk: AudioChunk) => void): void;
   /** Register handler for new connections */
@@ -332,6 +389,14 @@ export interface TTSOptions {
   speed?: number;
   /** Voice pitch adjustment */
   pitch?: number;
+  /**
+   * Cancellation signal, typically driven by barge-in.
+   *
+   * When the caller interrupts the agent mid-utterance, aborting this signal
+   * lets the provider tear down its HTTP stream. Without it the vendor keeps
+   * transmitting the rest of an utterance nobody will hear.
+   */
+  signal?: AbortSignal;
 }
 
 // ─── Turn Handling ─────────────────────────────────────────────────────────
@@ -731,6 +796,64 @@ export interface FelAgentConfig {
   /** Lifecycle hooks */
   hooks?: AgentHooks;
 
+  /**
+   * Whether lifecycle hooks are awaited before the turn continues.
+   *
+   * - `await` (default) — each hook completes before the pipeline moves on.
+   *   Correct when a hook writes state the next stage reads, e.g.
+   *   `onUserSpoke` capturing a caller id that a handler then looks up.
+   * - `detach` — hooks run in the background. No hook returns a value the
+   *   pipeline uses, so awaiting one only adds its latency to the caller's
+   *   wait. Use this when hooks are pure observers: analytics, scoring, CRM
+   *   writes, logging.
+   */
+  hooksMode?: "await" | "detach";
+
+  /**
+   * Answering-machine detection.
+   *
+   * Omit to disable. On an outbound campaign a voicemail greeting is otherwise
+   * transcribed and routed as if a person had spoken, which burns a
+   * concurrency slot and inflates the reported answer rate.
+   */
+  voicemail?: VoicemailOptions;
+
+  /**
+   * Let handlers replace the system prompt mid-call.
+   *
+   * Off by default. A handler that can rewrite its own instructions can also
+   * be talked into doing so by a caller, so this is a deliberate opt-in rather
+   * than a default.
+   */
+  allowPromptOverride?: boolean;
+
+  /**
+   * Checks on caller speech (before routing) and on the agent's reply (before
+   * speaking).
+   *
+   * Both boundaries are open by default: caller text reaches JEV routing, the
+   * knowledge base and tool arguments uninspected, and a handler's return value
+   * is spoken verbatim. Nothing is blocked unless a guardrail is configured.
+   */
+  guardrails?: GuardrailOptions;
+
+  /**
+   * Per-call cost accounting.
+   *
+   * Omit to skip tracking. Prices are yours to supply — a framework default
+   * would go stale and silently misreport spend.
+   */
+  cost?: {
+    /** Published USD prices. Omitted components are not counted. */
+    prices?: PriceTable;
+    /**
+     * Called as a call's tally changes, and once more with the final figure
+     * when it ends. This is the hook to forward per-call cost to a billing
+     * system.
+     */
+    onCallCost?: (sessionId: string, cost: CallCost) => void;
+  };
+
   /** Transport config or custom Transport instance */
   transport?:
     | {
@@ -761,6 +884,23 @@ export interface FelAgentConfig {
   /** Session management and horizontal scaling configuration */
   sessions?: SessionManagerOptions;
 
+  /**
+   * Hard ceiling on how long a single call may run, in ms. Default: 1800000
+   * (30 minutes). `0` disables the limit.
+   *
+   * A call with no ceiling holds a pipeline, VAD, preprocessor, STT socket and
+   * conversation memory for as long as the far end stays connected — including
+   * a half-open socket that never sends a close. This is the backstop for
+   * those, not a substitute for transport-level timeouts.
+   */
+  maxCallDurationMs?: number;
+
+  /**
+   * How often to sweep for calls that have outlived `maxCallDurationMs` or
+   * whose transport has gone away. Default: 30000ms. `0` disables the sweep.
+   */
+  callSweepIntervalMs?: number;
+
   /** Logging configuration */
   logging?: {
     /** Enable call logging for JEV training */
@@ -769,6 +909,13 @@ export interface FelAgentConfig {
     logDir?: string;
     /** Log level */
     level?: "debug" | "info" | "warn" | "error";
+    /**
+     * Log output shape. Default: `text`.
+     *
+     * `json` emits one JSON object per line for a log shipper to index; `text`
+     * stays readable in a terminal. Choose based on where the logs go.
+     */
+    format?: "text" | "json";
   };
 }
 

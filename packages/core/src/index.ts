@@ -341,6 +341,84 @@ export {
   type SpanName,
 } from "./observability/tracing.js";
 
+// ─── Cost ──────────────────────────────────────────────────────────────────
+export {
+  CostTracker,
+  createCostTracker,
+  emptyCallCost,
+  type CallCost,
+  type PriceTable,
+} from "./observability/cost.js";
+
+// ─── Metrics ───────────────────────────────────────────────────────────────
+export {
+  MetricsRegistry,
+  defaultMetrics,
+  registerCallMetrics,
+  type MetricSample,
+} from "./observability/metrics.js";
+
+// ─── Voicemail ──────────────────────────────────────────────────────────────
+export {
+  VoicemailDetector,
+  createVoicemailDetector,
+  looksLikeHuman,
+  matchesMachinePhrase,
+  type VoicemailOptions,
+  type VoicemailVerdict,
+} from "./voicemail/index.js";
+
+// ─── LLM ────────────────────────────────────────────────────────────────────
+export {
+  AnthropicLLM,
+  createAnthropicLLM,
+  type AnthropicLLMOptions,
+} from "./llm/index.js";
+
+export {
+  OpenAILLM,
+  createOpenAILLM,
+  turnsToMessages,
+  type LLMChatOptions,
+  type LLMMessage,
+  type LLMProvider,
+  type LLMResult,
+  type LLMStreamEvent,
+  type LLMToolCall,
+  type LLMUsage,
+  type OpenAILLMOptions,
+} from "./llm/index.js";
+
+// ─── Guardrails ─────────────────────────────────────────────────────────────
+export {
+  blockPattern,
+  defaultInputBlockedText,
+  defaultOutputBlockedText,
+  maxLength,
+  requireUnless,
+  runGuardrails,
+  type Guardrail,
+  type GuardrailInput,
+  type GuardrailOptions,
+  type GuardrailResult,
+  type GuardrailVerdict,
+} from "./guardrails/index.js";
+
+// ─── Resilience ─────────────────────────────────────────────────────────────
+export {
+  DEFAULT_FETCH_TIMEOUT_MS,
+  TimeoutError,
+  fetchWithTimeout,
+  isAbortError,
+  isRetryableError,
+  isRetryableStatus,
+  markRetryable,
+  retry,
+  type CancellableResponse,
+  type FetchTimeoutOptions,
+  type RetryOptions,
+} from "./resilience/index.js";
+
 // ─── Sessions & Scaling ─────────────────────────────────────────────────────
 export {
   SessionManager,

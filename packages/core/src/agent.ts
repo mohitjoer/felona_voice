@@ -1,3 +1,5 @@
+import { defaultMetrics, registerCallMetrics, type MetricsRegistry } from "./observability/metrics.js";
+import { createCostTracker, type CostTracker } from "./observability/cost.js";
 import { EventEmitter } from "node:events";
 import type {
   FelAgentConfig,
@@ -108,8 +110,34 @@ export class FelAgent extends EventEmitter {
   private pipelines: Map<string, VoicePipeline> = new Map();
   // Session tracking for direct interactions
   private sessionMap: Map<string, { session: Session; memory: ConversationMemory }> = new Map();
+  /**
+   * In-flight `interact()` turns, keyed by session id.
+   *
+   * Turns on one session run one at a time so their memory writes cannot
+   * interleave. Turns on *different* sessions stay concurrent.
+   */
+  private interactQueue: Map<string, Promise<void>> = new Map();
   /** Guards against a second `interact()` LRU eviction pass during setup. */
   private static readonly MAX_INTERACT_SESSIONS = 1000;
+
+  /** Per-call start time, used to enforce a maximum call duration. */
+  private callStartedAt: Map<string, number> = new Map();
+  /**
+   * Process-wide call counters.
+   *
+   * Exposed so a deployment can scrape them, and so a health endpoint can
+   * report live call count without a separate metrics backend.
+   */
+  readonly metrics: MetricsRegistry = defaultMetrics;
+  /**
+   * Per-call usage and cost, when `cost` is configured.
+   *
+   * Present only with a price table: without prices there is nothing to
+   * report but token counts, which the metrics registry already carries.
+   */
+  readonly costs: CostTracker | null = null;
+  private callSweepTimer: NodeJS.Timeout | null = null;
+  private stopping = false;
 
   private initialized = false;
   private jevReady = false;
@@ -117,7 +145,12 @@ export class FelAgent extends EventEmitter {
 
   constructor(config: FelAgentConfig) {
     super();
+    registerCallMetrics(this.metrics);
     this.config = config;
+    if (config.cost) {
+      this.costs = createCostTracker({ prices: config.cost.prices, metrics: this.metrics });
+      this.costs.onCallCost = config.cost.onCallCost;
+    }
     this.hooks = config.hooks ?? {};
 
     // Initialize logger (only writes to disk if logDir is explicitly provided by user)
@@ -125,6 +158,7 @@ export class FelAgent extends EventEmitter {
       logDir: config.logging?.logDir,
       level: config.logging?.level,
       enabled: config.logging?.enabled ?? Boolean(config.logging?.logDir),
+      format: config.logging?.format,
     });
 
     // One tracer for the whole agent: the pipeline's turns and the tool calls
@@ -176,9 +210,10 @@ export class FelAgent extends EventEmitter {
     this.sessions = createSessionManager(config.sessions);
     this.sessions.on("sessionCreated", (s) => this.emit("sessionCreated", s));
     this.sessions.on("sessionEnded", (s) => this.emit("sessionEnded", s));
-    this.sessions.on("concurrencyLimitReached", (active, max) =>
-      this.emit("concurrencyLimitReached", { active, max })
-    );
+    this.sessions.on("concurrencyLimitReached", (active, max) => {
+      this.metrics.increment("felona_calls_rejected_total");
+      this.emit("concurrencyLimitReached", { active, max });
+    });
 
     // Initialize transport
     this.transport = this.resolveInitialTransport();
@@ -242,6 +277,9 @@ export class FelAgent extends EventEmitter {
       if (opts.type === "twilio") {
         return new TwilioTransport({
           ...opts,
+          // The agent owns the registry, so the transport's /metrics route
+          // reports the same numbers the agent increments.
+          metrics: (opts.metrics as MetricsRegistry | undefined) ?? this.metrics,
           // `authToken` on a Twilio transport config would be ambiguous with
           // the WebSocket one, so it is spelled `authTokenTwilio` here.
           authToken: opts.authToken ?? (opts as { authTokenTwilio?: string }).authTokenTwilio,
@@ -258,6 +296,13 @@ export class FelAgent extends EventEmitter {
           maxConnections: rtc.maxConnections,
           waitForIceGatheringMs: rtc.waitForIceGatheringMs,
           peerConfig: rtc.peerConfig,
+          // Previously dropped on the floor: a config asking for sendonly
+          // silently got a sendrecv peer, and `verifyClient` — an explicit
+          // access control — was discarded without a word.
+          direction: rtc.direction,
+          verifyClient: rtc.verifyClient,
+          disconnectedTimeoutMs: rtc.disconnectedTimeoutMs,
+          metrics: rtc.metrics ?? this.metrics,
         });
       }
 
@@ -276,6 +321,7 @@ export class FelAgent extends EventEmitter {
         verifyClient: opts.verifyClient,
         heartbeatIntervalMs: opts.heartbeatIntervalMs,
         maxConnections: opts.maxConnections,
+        metrics: opts.metrics ?? this.metrics,
       });
     }
 
@@ -289,10 +335,34 @@ export class FelAgent extends EventEmitter {
    * a caller-supplied server behaves identically to one started with `listen()`.
    */
   private wireTransport(transport: Transport): void {
-    transport.onConnect((session) => this.handleConnect(session));
-    transport.onDisconnect((session) => this.handleDisconnect(session));
+    // The handler type is `(session) => void`, so returning these async methods
+    // directly would drop the promise. On Node 20+ an unhandled rejection
+    // terminates the process, and these reject on any provider teardown error
+    // — so one bad disconnect would kill every other call in flight.
+    transport.onConnect((session) => {
+      this.handleConnect(session).catch((error) =>
+        this.reportAsyncFailure("handleConnect", error),
+      );
+    });
+    transport.onDisconnect((session) => {
+      this.handleDisconnect(session).catch((error) =>
+        this.reportAsyncFailure("handleDisconnect", error),
+      );
+    });
     transport.onAudioChunk((sessionId, chunk) => this.handleAudio(sessionId, chunk));
     transport.onDTMF?.((sessionId, digit) => this.handleDTMF(sessionId, digit));
+  }
+
+  /**
+   * Contains a failure from a fire-and-forget call site.
+   *
+   * There is no caller left to propagate to, so the only correct options are
+   * to log it or crash. Log it, and make it visible.
+   */
+  private reportAsyncFailure(context: string, error: unknown): void {
+    const detail = error instanceof Error ? error.message : String(error);
+    this.logger.log("error", `${context} failed: ${detail}`);
+    this.emitSafe("error", error instanceof Error ? error : new Error(detail));
   }
 
   /**
@@ -334,7 +404,12 @@ export class FelAgent extends EventEmitter {
   private emitSafe(event: string, ...args: unknown[]): void {
     if (this.listenerCount(event) > 0) {
       this.emit(event, ...args);
+      return;
     }
+    // An `error` with no listener is fatal in Node, and dropping any other
+    // event loses information silently. Log either way.
+    const detail = args[0] instanceof Error ? args[0].message : JSON.stringify(args[0]);
+    this.logger.log("error", `Unobserved "${event}": ${detail}`);
   }
 
   /**
@@ -466,16 +541,99 @@ export class FelAgent extends EventEmitter {
   }
 
   /**
+   * Starts the periodic sweep for over-long or abandoned calls.
+   *
+   * A call is normally torn down by a disconnect event, but a transport that
+   * never delivers one (a half-open socket, a peer that vanished) would leave
+   * its pipeline resident forever. The sweep is the backstop.
+   */
+  private startCallSweeper(): void {
+    const interval = this.config.callSweepIntervalMs ?? 30_000;
+    if (interval <= 0 || this.callSweepTimer) return;
+    this.callSweepTimer = setInterval(() => this.sweepCalls(), interval);
+    this.callSweepTimer.unref?.();
+  }
+
+  private stopCallSweeper(): void {
+    if (!this.callSweepTimer) return;
+    clearInterval(this.callSweepTimer);
+    this.callSweepTimer = null;
+  }
+
+  /**
+   * Ends any call that has exceeded the maximum duration.
+   *
+   * Also drops pipelines with no recorded start, which can only happen if
+   * registration was interrupted — an entry the disconnect path would never
+   * reach.
+   */
+  private sweepCalls(): void {
+    const maxMs = this.config.maxCallDurationMs ?? 30 * 60 * 1000;
+    if (maxMs > 0) {
+      const now = Date.now();
+      for (const [sessionId, startedAt] of this.callStartedAt) {
+        if (now - startedAt < maxMs) continue;
+        this.logger.log(
+          "warn",
+          `Ending call ${sessionId}: exceeded maxCallDurationMs (${maxMs}ms)`,
+        );
+        this.metrics.increment("felona_calls_timed_out_total");
+        this.emitSafe("callTimeout", { sessionId, maxCallDurationMs: maxMs });
+        this.endCall(sessionId, "max-duration").catch((error) =>
+          this.reportAsyncFailure("call sweep teardown", error),
+        );
+      }
+    }
+
+    for (const sessionId of this.pipelines.keys()) {
+      if (this.callStartedAt.has(sessionId)) continue;
+      this.endCall(sessionId, "orphaned").catch((error) =>
+        this.reportAsyncFailure("orphan teardown", error),
+      );
+    }
+  }
+
+  /**
+   * Tears down one call's pipeline and session state.
+   *
+   * Shared by the disconnect handler and the sweeper so both paths release the
+   * same resources exactly once.
+   */
+  private async endCall(sessionId: string, reason: string): Promise<void> {
+    const pipeline = this.pipelines.get(sessionId);
+    // Count the teardown only if this call was actually live, so a second
+    // reap of the same id does not double-count.
+    if (!this.pipelines.delete(sessionId)) return;
+    this.callStartedAt.delete(sessionId);
+    this.metrics.increment("felona_calls_ended_total");
+    this.metrics.addGauge("felona_calls_active", -1);
+    if (pipeline) await pipeline.stop();
+    // Read the final tally before the record is dropped.
+    const cost = this.costs?.finish(sessionId);
+    if (cost && this.costs) {
+      this.costs.onCallCost?.(sessionId, cost);
+      this.emit("callCost", { sessionId, cost });
+    }
+    await this.sessions.endSession(sessionId).catch(() => {});
+    if (this.pipelines.size === 0) this.stopCallSweeper();
+    void reason;
+  }
+
+  /**
    * Stop the agent — shut down all pipelines and the transport.
    */
   async stop(): Promise<void> {
+    if (this.stopping) return;
+    this.stopping = true;
+    this.stopCallSweeper();
     this.logger.log("info", "Stopping agent...");
 
     // Stop all active pipelines
-    for (const pipeline of this.pipelines.values()) {
-      await pipeline.stop();
+    for (const sessionId of [...this.pipelines.keys()]) {
+      await this.endCall(sessionId, "shutdown");
     }
     this.pipelines.clear();
+    this.callStartedAt.clear();
 
     // Stop transport
     await this.transport.stop();
@@ -565,6 +723,29 @@ export class FelAgent extends EventEmitter {
       endpointing: this.config.endpointing,
       interruption: this.config.interruption,
       preemptive: this.config.preemptive,
+      hooksMode: this.config.hooksMode,
+      guardrails: this.config.guardrails,
+      voicemail: this.config.voicemail,
+      allowPromptOverride: this.config.allowPromptOverride,
+      countMetric: (name, value, labels) => this.metrics.increment(name, value, labels),
+      reportLLMUsage: (usage: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+      }) => {
+        this.costs?.addLLMUsage(session.id, usage);
+      },
+      reportUsage: (usage: { sttBytes: number; ttsBytes: number; synthesizedChars: number }) => {
+        if (!this.costs) return;
+        // 16 kHz, 16-bit mono is 32_000 bytes per second; telephony arrives at
+        // 8 kHz μ-law, which the codec expands to the same 16 kHz PCM.
+        this.costs.addAudioSeconds(
+          session.id,
+          usage.sttBytes / 32_000,
+          "inbound",
+        );
+        this.costs.addSynthesizedCharacters(session.id, usage.synthesizedChars);
+      },
       dtmf: this.config.dtmf,
       language: this.config.language,
       transferProvider: this.transferProvider,
@@ -593,12 +774,29 @@ export class FelAgent extends EventEmitter {
     pipeline.on("falseInterruption", () =>
       this.emit("falseInterruption", { sessionId: session.id }),
     );
+    pipeline.on("turnComplete", () => this.metrics.increment("felona_turns_total"));
+    pipeline.on("turnFailed", () => this.metrics.increment("felona_turn_errors_total"));
+    pipeline.on("sttError", () =>
+      this.metrics.increment("felona_stt_errors_total", 1, {
+        provider: this.sttProvider.name,
+      }),
+    );
+    pipeline.on("ttsError", () =>
+      this.metrics.increment("felona_tts_errors_total", 1, {
+        provider: this.ttsProvider.name,
+      }),
+    );
+    pipeline.on("bargeIn", () => this.metrics.increment("felona_barge_ins_total"));
     pipeline.on("callAnalysis", (analysis) => this.emit("callAnalysis", analysis));
     pipeline.on("dtmf", (event) => this.emit("dtmf", event));
     pipeline.on("dtmfPartial", (event) => this.emit("dtmfPartial", event));
     pipeline.on("dtmfEntry", (event) => this.emit("dtmfEntry", event));
 
     this.pipelines.set(session.id, pipeline);
+    this.callStartedAt.set(session.id, Date.now());
+    this.startCallSweeper();
+    this.metrics.increment("felona_calls_started_total");
+    this.metrics.addGauge("felona_calls_active", 1);
 
     try {
       await pipeline.start();
@@ -624,16 +822,9 @@ export class FelAgent extends EventEmitter {
    */
   private async handleDisconnect(session: Session): Promise<void> {
     this.logger.log("info", `Call ended: ${session.id}`);
-
-    const pipeline = this.pipelines.get(session.id);
-    if (pipeline) {
-      await pipeline.stop();
-      this.pipelines.delete(session.id);
-    }
-
-    // Mark session as ended in session manager
-    await this.sessions.endSession(session.id);
-
+    // Same teardown path as the sweeper, so a disconnect and a max-duration
+    // reap release exactly the same resources.
+    await this.endCall(session.id, "disconnect");
     this.emit("callEnded", session);
   }
 
@@ -683,6 +874,16 @@ export class FelAgent extends EventEmitter {
           apiKey,
           region: (this.config.stt?.region as string) ?? "eastus",
           language: this.config.stt?.language as string | undefined,
+          noiseReduction: this.config.stt?.noiseReduction as
+            | "off"
+            | "light"
+            | "medium"
+            | "heavy"
+            | undefined,
+          speechEnhancement: this.config.stt?.speechEnhancement as
+            | "disable"
+            | "quality"
+            | undefined,
         });
       case "google":
         return new GoogleSTT({
@@ -695,6 +896,11 @@ export class FelAgent extends EventEmitter {
         return new DeepgramSTT({
           apiKey,
           model: this.config.stt?.model as string | undefined,
+          noiseReduction: this.config.stt?.noiseReduction as
+            | "off"
+            | "light"
+            | "heavy"
+            | undefined,
         });
     }
   }
@@ -775,15 +981,54 @@ export class FelAgent extends EventEmitter {
    * console.log(reply.action.id);
    * ```
    */
+  /**
+   * Runs one text turn, serialised against other turns on the same session.
+   *
+   * Two concurrent `interact()` calls on a session would interleave: both
+   * build their context from the same memory, both await JEV, and then both
+   * append — leaving the conversation with one turn's answer missing its
+   * question. Chaining on a per-session promise makes each turn observe the
+   * previous one's result.
+   */
   async interact(input: string | InteractOptions): Promise<InteractResult> {
     const opts: InteractOptions = typeof input === "string" ? { userMessage: input } : input;
+    const sessionId = opts.sessionId ?? "default-session";
+
+    const previous = this.interactQueue.get(sessionId) ?? Promise.resolve();
+    // The queue entry must not inherit a rejection, or one failed turn would
+    // poison every later turn on that session.
+    const run = previous
+      .catch(() => {})
+      .then(() => this.runInteractTurn(sessionId, opts));
+
+    const queued: Promise<void> = run.then(
+      () => {},
+      () => {},
+    );
+    this.interactQueue.set(sessionId, queued);
+
+    // Release the slot once this turn settles so a long-lived session does not
+    // accumulate one pending promise per turn. Guarded so a turn that queued
+    // behind us does not have its successor dropped from the chain.
+    void queued.then(() => {
+      if (this.interactQueue.get(sessionId) === queued) {
+        this.interactQueue.delete(sessionId);
+      }
+    });
+
+    return run;
+  }
+
+  private async runInteractTurn(
+    sessionId: string,
+    opts: InteractOptions,
+  ): Promise<InteractResult> {
     const startTime = performance.now();
 
     // 1. Ensure JEV is initialized
     await this.ensureJEVInitialized();
 
     // 2. Resolve session & memory
-    const sessionId = opts.sessionId ?? "default-session";
     let sessionEntry = this.sessionMap.get(sessionId);
     if (!sessionEntry) {
       const session: Session = {
