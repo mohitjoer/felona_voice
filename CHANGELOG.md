@@ -84,7 +84,7 @@ before upgrading.
 - `logging.format: "json"` for one-object-per-line output.
 - Stale pipeline reaper for calls that never receive a disconnect.
 
-### Fixed
+### Fixed (v3.0.1)
 
 - `CallSupervisor.disconnect()` no longer calls `transport.stop()`, which tore
   down the whole server and every concurrent call.

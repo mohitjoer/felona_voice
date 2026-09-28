@@ -94,7 +94,10 @@ export class AgentBuilder {
    */
   llm(
     description: string,
-    options: LLMChatOptions & { llm: LLMProvider },
+    // `Omit<userMessage>`: the builder supplies it from the turn being routed.
+    // Requiring it here would force every caller to pass a value that is
+    // immediately discarded.
+    options: Omit<LLMChatOptions, "userMessage"> & { llm: LLMProvider },
   ): this {
     const { llm: provider, ...chatOptions } = options;
     this.actionList.push(

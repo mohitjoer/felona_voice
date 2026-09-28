@@ -73,9 +73,18 @@ export function createKnowledgeTask(options: KnowledgeTaskOptions): AgentAction 
   };
 }
 
-/** Default answer composition: read the best passage, or admit ignorance. */
+/**
+ * Default answer composition: read the best passage, or admit ignorance.
+ *
+ * Signature-compatible with `KnowledgeTaskOptions.answer`, so it can be passed
+ * directly — previously the second parameter did not match the `answer`
+ * contract, so the obvious `answer: defaultKnowledgeAnswer` did not typecheck.
+ * Pass `options` as the third argument to customise the not-found line.
+ */
 export function defaultKnowledgeAnswer(
   results: KnowledgeChunk[],
+  // Present only to satisfy the `answer` contract; unused.
+  _ctx?: ActionContext,
   options: { notFound?: string } = {},
 ): string {
   if (results.length === 0) {
