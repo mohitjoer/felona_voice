@@ -10,7 +10,7 @@
   <a href="https://www.npmjs.com/package/felona-voice"><img src="https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6" alt="npm version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square" alt="License: MIT" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square" alt="TypeScript" /></a>
-  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-587%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
+  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-584%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-green.svg?style=flat-square" alt="Node.js" /></a>
   <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square" alt="PRs Welcome" /></a>
 </p>
@@ -314,7 +314,7 @@ Newer capabilities: **[docs/AGENT_CAPABILITIES.md](./docs/AGENT_CAPABILITIES.md)
 (LLM-backed actions, background cancellation, guardrails, voicemail detection).
 
 > ⚠️ **Breaking:** Twilio webhook signature validation now fails closed. See
-> [the telephony guide](./docs/TELEPHONY_TWILIO_GUIDE.md#%EF%B8%8F-breaking-change-webhook-authentication-is-now-required).
+> [the telephony guide](./docs/TELEPHONY_TWILIO_GUIDE.md#breaking-change-webhook-authentication-is-now-required).
 
 ## Roadmap
 

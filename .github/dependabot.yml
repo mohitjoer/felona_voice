@@ -1,0 +1,45 @@
+# Dependency updates.
+#
+# This framework is a published library, so a transitive dependency change is a
+# change to what every consumer installs. Updates are grouped and automated,
+# but they open pull requests rather than merging themselves: an unreviewed
+# version bump in a `0.x` range can break the build or the audio path.
+
+version: 2
+
+updates:
+  # Runtime dependencies. Small, infrequent, and reviewed.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      # Patch-level drift only. Behaviour changes are wanted; the churn is not.
+      patches:
+        applies-to: version-updates
+        update-types: [minor, patch]
+      # Runtime deps get a human read: a new ws major can change socket
+      # behaviour under exactly the load this framework is built for.
+      runtime:
+        dependency-type: production
+
+  # Test tooling. Noisier and lower risk; more frequent is fine.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-tooling:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  # Actions are supply-chain too. Pinning to a major tag lets the tag move
+  # under you; SHA-pinning means a reviewed, immutable reference.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions: {}

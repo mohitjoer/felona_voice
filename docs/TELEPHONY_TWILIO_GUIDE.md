@@ -4,7 +4,9 @@ Felona Voice provides built-in, first-class support for telephone calls over mob
 
 ---
 
-## ⚠️ Breaking change: webhook authentication is now required
+## Breaking change: webhook authentication is now required
+
+**Read this before upgrading an unauthenticated Twilio setup.**
 
 Earlier versions accepted **unsigned** webhook requests, which meant anyone who
 could reach the port could place calls into your agent. Signature validation

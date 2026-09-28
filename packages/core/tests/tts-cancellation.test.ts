@@ -37,14 +37,15 @@ function streamingResponse(
     },
   });
   if (signal) {
-    if (signal.aborted) {
-      capture && (capture.cancelled = true);
-    } else {
-      signal.addEventListener("abort", () => {
-        if (capture) capture.cancelled = true;
-        void body.cancel();
-      }, { once: true });
-    }
+    // Recording the abort is enough. A real fetch tears the socket down, and
+    // the source's own `cancel()` fires as a consequence. Calling
+    // `body.cancel()` here would instead throw, because the consumer holds a
+    // reader lock on the stream.
+    const mark = () => {
+      if (capture) capture.cancelled = true;
+    };
+    if (signal.aborted) mark();
+    else signal.addEventListener("abort", mark, { once: true });
   }
   return new Response(body);
 }

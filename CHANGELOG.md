@@ -7,7 +7,7 @@ All notable changes to Felona Voice are recorded here. This project follows
 
 The production-hardening release. **Breaking:** the Twilio webhook now rejects
 requests whose signature cannot be verified. See
-[the telephony guide](./docs/TELEPHONY_TWILIO_GUIDE.md#%EF%B8%8F-breaking-change-webhook-authentication-is-now-required)
+[the telephony guide](./docs/TELEPHONY_TWILIO_GUIDE.md#breaking-change-webhook-authentication-is-now-required)
 before upgrading.
 
 ### Breaking
@@ -112,6 +112,14 @@ before upgrading.
   [Agent Capabilities](./docs/AGENT_CAPABILITIES.md); ONNX claims removed;
   broken cross-doc links fixed.
 - CI installs with `npm ci` alone and audits production dependencies.
+- All GitHub Actions are SHA-pinned with a version comment. A mutable tag is
+  a supply-chain hole: the tag can move to a new commit under a review that
+  looked at the old one.
+- New `pr-checks.yml` gates every pull request: typecheck/lint/build/test, a
+  clean-install smoke test of the packed tarball, docs integrity, a concurrency
+  smoke test, and a production dependency audit.
+- `dependabot.yml`, `CODEOWNERS` and `SECURITY.md` added.
+- `npm run check` runs every local gate in the order CI does.
 - `npm run loadtest` benchmarks N concurrent calls through real pipelines with
   stubbed providers, and `docs/PRODUCTION.md` records the measured result: the
   framework's own per-turn work is not the bottleneck; provider concurrency is.

@@ -9,12 +9,15 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/cli",
-    "dev": "npm run dev --workspace=packages/core",
-    "test": "npm run test --workspaces",
-    "lint": "eslint \"packages/*/src/**/*.ts\" \"scripts/**/*.ts\"",
+    "check": "npm run typecheck && npm run lint && npm run build && npm test && npm run check:docs && npm run check:badge",
+    "check:badge": "node scripts/check-badge.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo",
-    "typecheck": "tsc --noEmit -p tsconfig.check.json",
-    "loadtest": "tsx scripts/loadtest.ts"
+    "dev": "npm run dev --workspace=packages/core",
+    "lint": "eslint \"packages/*/src/**/*.ts\" \"scripts/**/*.ts\"",
+    "loadtest": "tsx scripts/loadtest.ts",
+    "test": "npm run test --workspaces",
+    "typecheck": "tsc --noEmit -p tsconfig.check.json"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -1,0 +1,28 @@
+# Review routing.
+#
+# Placeholders — replace with the maintainer handles who should actually be
+# requested. GitHub does not require a valid user for a rule to apply, but a
+# rule pointing at a non-existent account is worse than no rule, because it
+# looks like coverage. Until these are set, every PR needs a human to pick a
+# reviewer, which is the current effective behaviour anyway.
+
+# Default reviewer for anything not matched below.
+*                       @felona-voice/maintainers
+
+# The rules in agents/agents.md encode design decisions that are easy to
+# violate accidentally, so changes under these paths need a deliberate review.
+/packages/core/src/     @felona-voice/maintainers
+/packages/core/src/types.ts     @felona-voice/maintainers
+/agents/                @felona-voice/maintainers
+/docs/                  @felona-voice/maintainers
+
+# Providers and transports: correctness matters and a mistake reaches callers.
+/packages/core/src/stt/         @felona-voice/maintainers
+/packages/core/src/tts/         @felona-voice/maintainers
+/packages/core/src/telephony/   @felona-voice/maintainers
+/packages/core/src/transport/   @felona-voice/maintainers
+
+# Anything a caller depends on: public API surface and release plumbing.
+/packages/core/src/index.ts     @felona-voice/maintainers
+/packages/*/package.json        @felona-voice/maintainers
+/.github/workflows/             @felona-voice/maintainers
