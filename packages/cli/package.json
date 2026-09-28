@@ -1,7 +1,7 @@
 {
   "name": "felona-cli",
-  "version": "0.2.5",
-  "description": "CLI for Felona Voice — scaffold, run, and train voice agents",
+  "version": "3.0.0",
+  "description": "CLI for Felona Voice \u2014 scaffold, run, and train voice agents",
   "bin": {
     "felona": "dist/index.js"
   },
@@ -14,14 +14,15 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "echo \"CLI tests pending\""
+    "test": "vitest run"
   },
   "dependencies": {
-    "felona-voice": "^0.2.5"
+    "felona-voice": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
   },
   "repository": {
     "type": "git",

@@ -21,6 +21,7 @@ import { createCollectTask, type CollectTaskOptions } from "./slots/tasks.js";
 import { createKnowledgeTask, type KnowledgeTaskOptions } from "./knowledge/task.js";
 import type { KnowledgeSearcher } from "./knowledge/kb.js";
 import type { McpClient } from "./tools/mcp.js";
+import { turnsToMessages, type LLMChatOptions, type LLMProvider } from "./llm/index.js";
 import type { AnalyzeOptions } from "./analytics/call-analysis.js";
 import type { FelonaTracer } from "./observability/tracing.js";
 
@@ -39,6 +40,8 @@ export class AgentBuilder {
   private confidenceThreshold = 0.35;
   private transportConfig?: ({ type?: "websocket" | "twilio" | "webrtc"; port?: number; host?: string; path?: string; streamUrl?: string; [k: string]: unknown } | Transport);
   private sessionConfig?: SessionManagerOptions;
+  /** Ids of knowledge tasks materialised into `actionList`, so rebuilds can replace rather than duplicate them. */
+  private knowledgeTaskIds = new Set<string>();
   private builtAgent?: FelAgent;
   /** Knowledge tasks awaiting an agent to supply a knowledge base. */
   private pendingKnowledgeTasks: Array<Omit<KnowledgeTaskOptions, "knowledge">> = [];
@@ -75,6 +78,55 @@ export class AgentBuilder {
   /** Add multiple initial slots */
   slotsRecord(slots: Record<string, unknown>): this {
     Object.assign(this.slots, slots);
+    return this;
+  }
+
+  /**
+   * Add a catch-all action backed by an LLM.
+   *
+   * This is the "let the model handle whatever it is asked" path, and it sits
+   * alongside hand-written `action()`s rather than replacing them: JEV still
+   * routes, so a narrow action with a deterministic handler wins where one
+   * exists and the model covers the long tail.
+   *
+   * The handler receives the turn's `signal`, so a caller interrupting mid-answer
+   * cancels the model request instead of paying for a completion nobody hears.
+   */
+  llm(
+    description: string,
+    // `Omit<userMessage>`: the builder supplies it from the turn being routed.
+    // Requiring it here would force every caller to pass a value that is
+    // immediately discarded.
+    options: Omit<LLMChatOptions, "userMessage"> & { llm: LLMProvider },
+  ): this {
+    const { llm: provider, ...chatOptions } = options;
+    this.actionList.push(
+      defineAction({
+        id: "llm",
+        description,
+        handler: async (ctx) => {
+          const result = await provider.chat({
+            ...chatOptions,
+            userMessage: ctx.conversation.currentUtterance,
+            // `turns` holds committed history only; the utterance being routed
+            // arrives separately as `userMessage`. Slicing the last turn off
+            // here would drop the caller's most recent exchange.
+            messages: turnsToMessages(ctx.conversation.turns),
+            tools: ctx.tools.list(),
+            signal: ctx.signal,
+          });
+          // Reported so the turn's tokens land in per-call cost. Without this
+          // the largest cost in a voice agent goes unmeasured.
+          if (result.usage) {
+            ctx.reportUsage?.({
+              promptTokens: result.usage.promptTokens,
+              completionTokens: result.usage.completionTokens,
+            });
+          }
+          return result.text;
+        },
+      }),
+    );
     return this;
   }
 
@@ -430,12 +482,21 @@ export class AgentBuilder {
     // on the action array being mutated behind the agent's back.
     const knowledgeHolders: Array<{ searcher: KnowledgeSearcher | null }> = [];
 
+    // These tasks are materialised into `actionList` here. On a rebuild after
+    // a cache miss the previous copies are still in the list, so pushing again
+    // would produce duplicate action ids — which JEV rejects at initialize.
+    // Removing them first keeps exactly one copy per configured knowledge base.
+    if (this.knowledgeTaskIds.size > 0) {
+      this.actionList = this.actionList.filter(
+        (a) => !this.knowledgeTaskIds.has(a.id),
+      );
+    }
+
     for (const options of this.pendingKnowledgeTasks) {
       const holder: { searcher: KnowledgeSearcher | null } = { searcher: null };
       knowledgeHolders.push(holder);
 
-      this.actionList.push(
-        createKnowledgeTask({
+      const task = createKnowledgeTask({
           ...options,
           knowledge: {
             search: (query, searchOptions) => {
@@ -447,8 +508,9 @@ export class AgentBuilder {
               return holder.searcher.search(query, searchOptions);
             },
           },
-        }),
-      );
+        });
+      this.actionList.push(task);
+      this.knowledgeTaskIds.add(task.id);
     }
 
     const agent = new FelAgent({
@@ -495,6 +557,12 @@ export class AgentBuilder {
 
   /**
    * Configure agent to connect with Twilio Media Streams and mobile phone carriers.
+   *
+   * `authToken` and `publicUrl` are what make `X-Twilio-Signature` validation
+   * possible, and they are the only thing standing between a public webhook and
+   * a stranger placing calls into your agent. Without them the transport runs
+   * unauthenticated and warns on every signed request; set `allowUnverified`
+   * to opt out deliberately (e.g. behind a private network).
    */
   twilio(options?: {
     port?: number;
@@ -503,6 +571,17 @@ export class AgentBuilder {
     webhookPath?: string | null;
     streamUrl?: string;
     greeting?: string;
+    /** Twilio auth token, used to validate X-Twilio-Signature. */
+    authToken?: string;
+    /** Public base URL of this server, e.g. "https://voice.example.com". */
+    publicUrl?: string;
+    /** Restrict the TwiML webhook to these Host values. */
+    allowedHosts?: string[];
+    /**
+     * Accept unsigned webhook requests. Default: false.
+     * Only for deployments where the webhook is unreachable except by Twilio.
+     */
+    allowUnverified?: boolean;
   }): this {
     this.transportConfig = {
       type: "twilio",

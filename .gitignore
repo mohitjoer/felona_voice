@@ -5,8 +5,17 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Agent memory (personal)
-agents/
+# Agent working memory
+#
+# agents/agents.md is the exception: it is the project's design rulebook, it is
+# referenced by CONTRIBUTING.md and the PR template, and a contributor cannot
+# follow rules they cannot read. Everything else under agents/ (PRD, working
+# notes) stays local.
+agents/*
+!agents/agents.md
+
+# Tool-specific pointers into the rulebook. Small, and they make it
+# discoverable from whichever assistant a contributor happens to use.
 AGENTS.md
 GEMINI.md
 CLAUDE.md

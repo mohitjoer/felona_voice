@@ -8,6 +8,12 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["packages/*/src/**/*.ts"],
-  "exclude": ["node_modules", "packages/*/dist"]
+  "include": [
+    "packages/*/src/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "packages/*/dist"
+  ]
 }

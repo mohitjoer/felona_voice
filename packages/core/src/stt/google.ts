@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { AudioBuffer } from "./audio-buffer.js";
 import type {
   STTProvider,
   STTStream,
@@ -13,6 +14,8 @@ export interface GoogleSTTOptions {
   languageCode?: string;
   model?: string;
   enableWordTimeOffsets?: boolean;
+  /** Deadline for a single recognition request. Default: 15000ms. */
+  timeoutMs?: number;
 }
 
 /**
@@ -47,7 +50,7 @@ export class GoogleSTT implements STTProvider {
 }
 
 class GoogleSTTStream extends EventEmitter implements STTStream {
-  private chunks: Buffer[] = [];
+  private readonly buffer: AudioBuffer;
   private resultHandler: ((result: STTResult) => void) | null = null;
   private errorHandler: ((error: Error) => void) | null = null;
   private isClosed = false;
@@ -57,11 +60,18 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
   constructor(config: GoogleSTTOptions & { keywords?: string[] }) {
     super();
     this.config = config;
+    this.buffer = new AudioBuffer({
+      onDrop: (bytes) =>
+        this.reportError(
+          `audio buffer cap reached, discarded ${bytes} bytes of oldest audio`,
+          new Error("buffer overflow"),
+        ),
+    });
   }
 
   write(chunk: AudioChunk): void {
     if (this.isClosed) return;
-    this.chunks.push(chunk.data);
+    this.buffer.push(chunk.data);
   }
 
   onResult(handler: (result: STTResult) => void): void {
@@ -73,11 +83,16 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
   }
 
   private reportError(context: string, err: unknown): void {
-    const error = err instanceof Error ? err : new Error(String(err));
+    const detail = err instanceof Error ? err.message : String(err);
+    // The context carries the diagnosis (status, overflow size); the
+    // detail is only the provider's own message. Both belong in what
+    // the handler sees, otherwise a 401 is indistinguishable from a
+    // rate limit.
+    const error = new Error(detail ? `${context}: ${detail}` : context);
     if (this.errorHandler) {
       this.errorHandler(error);
     } else {
-      console.error(`[STT/Google] ${context}: ${error.message}`);
+      console.error(`[STT/Google] ${context}: ${detail}`);
     }
   }
 
@@ -88,21 +103,24 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
    * stops speaking to get a result mid-call.
    */
   async flush(): Promise<void> {
-    this.inFlight = this.inFlight.then(() => this.recognize());
+    // Recover from a prior rejection: chaining onto a rejected promise would
+    // make every later flush — and close(), which flushes — reject too.
+    const previous = this.inFlight.catch(() => {});
+    this.inFlight = previous.then(() => this.recognize());
     await this.inFlight;
   }
 
   private async recognize(): Promise<void> {
-    if (this.chunks.length === 0) return;
+    if (this.buffer.isEmpty) return;
 
-    const fullPcm = Buffer.concat(this.chunks);
-    this.chunks = [];
+    const fullPcm = this.buffer.take();
 
     // Skip tiny audio (< 0.2s)
     if (fullPcm.length < 3200) return;
 
     const base64Audio = fullPcm.toString("base64");
-    const url = `https://speech.googleapis.com/v1/speech:recognize?key=${encodeURIComponent(this.config.apiKey)}`;
+    const url =
+      "https://speech.googleapis.com/v1/speech:recognize";
 
     const speechContexts = this.config.keywords?.length
       ? [{ phrases: this.config.keywords }]
@@ -113,6 +131,9 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          // Sent as a header rather than `?key=`: query strings land in proxy
+          // logs, CDN logs and error messages, and a leaked key is a leaked key.
+          "X-Goog-Api-Key": this.config.apiKey,
         },
         body: JSON.stringify({
           config: {
@@ -127,11 +148,21 @@ class GoogleSTTStream extends EventEmitter implements STTStream {
             content: base64Audio,
           },
         }),
+        signal: AbortSignal.timeout(this.config.timeoutMs ?? 15_000),
       });
 
       if (!res.ok) {
-        const err = await res.text();
-        this.reportError(`recognition error ${res.status}`, err);
+        const err = await res.text().catch(() => "");
+        this.reportError(
+          `recognition failed (${res.status}${
+            res.status === 401 || res.status === 403
+              ? " — check the Google Cloud API key"
+              : res.status === 429
+                ? " — rate limited"
+                : ""
+          })`,
+          new Error(err || res.statusText),
+        );
         return;
       }
 

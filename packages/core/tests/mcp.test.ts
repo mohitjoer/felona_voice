@@ -433,3 +433,28 @@ describe("builder integration", () => {
     );
   });
 });
+
+describe("MCP transport restart", () => {
+  it("respawns a server that died instead of throwing 'already started'", async () => {
+    const { StdioMcpTransport } = await import("../src/tools/mcp.js");
+    const transport = new StdioMcpTransport({
+      command: process.execPath,
+      args: ["-e", "setTimeout(()=>{},50)"],
+    });
+    await transport.start();
+    // A dead child is still set, so a second start() is the restart path.
+    await expect(transport.start()).resolves.toBeUndefined();
+    await transport.close();
+  });
+
+  it("close() is still idempotent and final", async () => {
+    const { StdioMcpTransport } = await import("../src/tools/mcp.js");
+    const transport = new StdioMcpTransport({
+      command: process.execPath,
+      args: ["-e", "setTimeout(()=>{},50)"],
+    });
+    await transport.start();
+    await transport.close();
+    await expect(transport.close()).resolves.toBeUndefined();
+  });
+});

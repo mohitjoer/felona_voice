@@ -684,3 +684,125 @@ PCMU is chosen over Opus for a reason specific to this framework: it is the one 
 - **`stop()` only closes a server it opened.** Pass your own via `TransportOptions.server` to share a port, and it is left alone.
 
 The peer connection factory and audio track factory are separate because a transceiver added *by kind* leaves the sender with no track, and the only track then reachable is the receiver's — which is remote and rejects writes.
+
+---
+
+## 12. Production Hardening (`packages/core/src/resilience/`)
+
+Every outbound provider call is bounded. A deadline that only races a timer is
+useless — the request keeps running — so the composed `AbortSignal` is passed to
+`fetch` and the socket is actually torn down.
+
+```typescript
+import {
+  fetchWithTimeout, retry, markRetryable, isRetryableStatus,
+  DEFAULT_FETCH_TIMEOUT_MS,
+} from "felona-voice";
+```
+
+| Export | Purpose |
+|---|---|
+| `fetchWithTimeout(url, opts)` | `fetch` with a real deadline. Returns `{ response, cancel }`; `cancel()` aborts and frees the socket. |
+| `retry(fn, opts)` | Exponential backoff with jitter. Retries only errors tagged via `markRetryable`, so a 400 is never retried. |
+| `markRetryable(error)` | Tags an error as transient. Non-enumerable, so it does not reach JSON output. |
+| `isRetryableStatus(status)` | `408`, `425`, `429`, `5xx`. |
+| `TimeoutError` / `isAbortError(error)` | Distinguishes our deadline from a caller cancellation. Neither is retryable. |
+
+Per-provider deadlines: `timeoutMs` on any STT provider, `requestTimeoutMs` on
+an MCP client.
+
+## 13. LLM Providers (`packages/core/src/llm/`)
+
+```typescript
+import { createOpenAILLM, createAnthropicLLM, turnsToMessages } from "felona-voice";
+```
+
+`LLMProvider` is `chat(options) => Promise<LLMResult>` plus `totalUsage()`.
+`chat()` streams, runs the tool loop, and stops on `signal`.
+
+- `createOpenAILLM({ apiKey, model?, baseUrl?, temperature?, maxTokens?, stream? })` — any OpenAI-compatible endpoint.
+- `createAnthropicLLM({ apiKey, model?, temperature?, maxTokens?, promptCaching? })` — Claude's Messages API. **Not** wire-compatible with the above: `system` is a top-level field, tools are `tool_use` blocks, and the streaming protocol differs.
+
+`LLMResult`: `{ text, toolCalls, usage?, finishReason? }`. `finishReason` is
+`max_tool_iterations` when the loop hits its cap, or the unknown tool's name
+when it could not be resolved — retrying a name that will never resolve just
+burns tokens.
+
+```typescript
+.llm("handle anything else", { llm: createOpenAILLM({ apiKey }) })
+```
+
+`builder.llm()` registers a catch-all action; JEV still routes, so deterministic
+actions win where they exist. The action passes committed history as `messages`
+and the utterance being routed as `userMessage`, and reports token usage so
+cost tracking sees it.
+
+## 14. Guardrails (`packages/core/src/guardrails/`)
+
+```typescript
+import { blockPattern, maxLength, requireUnless, runGuardrails } from "felona-voice";
+```
+
+A guardrail is `(input: { text, session, actionId? }) => { action: "allow" } | { action: "block", reason, speak? }`.
+Input guardrails run before routing; output guardrails before speaking. **A
+guardrail that throws blocks the turn.** See [PRODUCTION.md §4](./PRODUCTION.md#4-guardrails).
+
+## 15. Cost Tracking (`packages/core/src/observability/cost.ts`)
+
+```typescript
+import { CostTracker, createCostTracker, type PriceTable } from "felona-voice";
+```
+
+`cost: { prices, onCallCost }` on the agent. `CallCost`: `{ llmPromptTokens, llmCompletionTokens, sttSeconds, ttsSeconds, ttsCharacters, estimatedUsd }`. `finish(id)` returns the final tally and drops the record. Prices are required — no defaults, because a stale price misreports spend.
+
+## 16. Metrics (`packages/core/src/observability/metrics.ts`)
+
+`MetricsRegistry` with `increment`, `addGauge`, `render()` (Prometheus text
+format), and `observeBreaker`. Served at `/metrics` by every transport; a
+described metric with no samples renders as `0` so series exist from the first
+scrape. See [PRODUCTION.md §2](./PRODUCTION.md#2-observability).
+
+## 17. Voicemail Detection (`packages/core/src/voicemail/`)
+
+```typescript
+import { VoicemailDetector, createVoicemailDetector } from "felona-voice";
+```
+
+`voicemail: { graceMs?, threshold?, extraPhrases?, override? }`. Phrase-based
+over the transcript, so it works with any STT provider. The verdict settles
+once and does not flip. Requires a transport that can end a call
+(`ctx.hangup()` / `Transport.closeSession`).
+
+## 18. New `FelAgentConfig` Options
+
+| Option | Default | Effect |
+|---|---|---|
+| `maxCallDurationMs` | `1800000` | Hard ceiling per call. `0` disables. |
+| `callSweepIntervalMs` | `30000` | Sweep interval for over-long or orphaned calls. `0` disables. |
+| `hooksMode` | `"await"` | `"detach"` moves observer hooks off the turn critical path. `onCallEnd` is always awaited. |
+| `guardrails` | none | `{ input?, output?, onInputBlocked?, onOutputBlocked? }`. |
+| `voicemail` | none | Answering-machine detection. |
+| `allowPromptOverride` | `false` | Enables `ctx.setSystemPrompt()`. |
+| `cost` | none | `{ prices?, onCallCost? }`. |
+| `logging.format` | `"text"` | `"json"` emits one object per line. |
+| `sessions.maxConcurrent` | `100` | Per-instance concurrent call ceiling. |
+| `stt.noiseReduction` | `"off"` | Provider-side denoising (Deepgram, Azure). |
+| `stt.speechEnhancement` | — | Azure far-field enhancement. |
+| `transport.maxConnections` | unset | Admission control. Unset means none. |
+| `transport.disconnectedTimeoutMs` | `30000` | WebRTC peer grace before reaping. |
+
+## 19. New `ActionContext` Members
+
+| Member | Purpose |
+|---|---|
+| `signal` | Aborts on barge-in, voicemail hangup, and pipeline stop. Thread it into your `fetch`. |
+| `hangup()` | Ends the call, carrier-agnostic. Omitted if the transport cannot. |
+| `setSystemPrompt(prompt)` | Replaces the prompt from the next turn. Needs `allowPromptOverride`. |
+| `reportUsage({ promptTokens, completionTokens })` | Attributes LLM spend to the call. |
+
+## 20. `Transport.closeSession(sessionId)`
+
+Optional. Tears down one call, leaving the server and every other call running.
+Distinct from `stop()`, which is process-wide. Anything that ends one caller —
+`CallSupervisor` included — must use this; `stop()` drops every other caller on
+the process. Transports that cannot address a single session leave it undefined.

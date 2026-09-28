@@ -37,13 +37,22 @@ export class DeepgramSTT implements STTProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly noiseReduction: "off" | "light" | "heavy";
 
   constructor(options: {
     apiKey: string;
     model?: string;
     baseUrl?: string;
+    /**
+     * Server-side denoising, applied before transcription.
+     *
+     * `off` by default: it costs extra per minute and can attenuate
+     * consonants on a clean line. Turn it up on noisy calls.
+     */
+    noiseReduction?: "off" | "light" | "heavy";
   }) {
     this.apiKey = options.apiKey;
+    this.noiseReduction = options.noiseReduction ?? "off";
     this.model = options.model ?? "nova-2";
     this.baseUrl =
       options.baseUrl ?? "wss://api.deepgram.com/v1/listen";
@@ -64,6 +73,7 @@ export class DeepgramSTT implements STTProvider {
       interimResults: options?.interimResults ?? true,
       keywords: options?.keywords,
       flushTimeoutMs: options?.flushTimeoutMs,
+      noiseReduction: this.noiseReduction,
     });
   }
 }
@@ -80,9 +90,21 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
     interimResults: boolean;
     keywords?: string[];
     flushTimeoutMs: number;
+    /** Server-side denoising level, sent as `noise_reduction`. */
+    noiseReduction: "off" | "light" | "heavy";
   };
   private connected = false;
   private closed = false;
+  /**
+   * Set when the socket drops mid-call, so the drop is reported once a
+   * reconnect is attempted rather than on every subsequent frame.
+   */
+  private reportedDisconnect = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer?: NodeJS.Timeout;
+
+  /** Reconnect budget for a single call. */
+  private static readonly MAX_RECONNECT_ATTEMPTS = 5;
   private connectPromise: Promise<void>;
   /** Audio written before the socket opened, replayed once it connects. */
   private pendingAudio: Buffer[] = [];
@@ -100,9 +122,15 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
     interimResults: boolean;
     keywords?: string[];
     flushTimeoutMs?: number;
+    noiseReduction?: "off" | "light" | "heavy";
   }) {
     super();
-    this.config = { ...config, flushTimeoutMs: config.flushTimeoutMs ?? 1500 };
+    this.config = {
+      ...config,
+      flushTimeoutMs: config.flushTimeoutMs ?? 1500,
+      // Normalised here so the query param is never the string "undefined".
+      noiseReduction: config.noiseReduction ?? "off",
+    };
     this.connectPromise = this.connect();
 
     // The pipeline does not await the connection (it is created per call and
@@ -134,6 +162,13 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
       for (const kw of this.config.keywords) {
         params.append("keywords", kw);
       }
+    }
+
+    // Server-side denoising. Off by default because it costs money and, on a
+    // clean line, can attenuate consonants — so it is the operator's call
+    // rather than something the framework assumes.
+    if (this.config.noiseReduction) {
+      params.append("noise_reduction", String(this.config.noiseReduction));
     }
 
     const url = `${this.config.baseUrl}?${params.toString()}`;
@@ -173,8 +208,63 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
       ws.on("close", () => {
         this.connected = false;
         this.releaseFinalWaiters();
+        // An unexpected close used to end recognition for the rest of the
+        // call: `write` kept pushing into a buffer nobody was reading, and the
+        // agent went quietly deaf. Reconnect instead, bounded by a breaker.
+        if (!this.closed) this.scheduleReconnect();
       });
     });
+  }
+
+  /**
+   * Reconnects the stream after an unexpected socket drop.
+   *
+   * Bounded: after `MAX_RECONNECT_ATTEMPTS` the stream stays down and reports
+   * it once. An unbounded retry against a provider that is refusing
+   * connections turns one call into a reconnect loop.
+   */
+  private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    if (this.reconnectAttempts >= DeepgramSTTStream.MAX_RECONNECT_ATTEMPTS) {
+      if (!this.reportedDisconnect) {
+        this.reportedDisconnect = true;
+        this.fail(
+          new Error(
+            `STT/Deepgram disconnected and could not reconnect after ${this.reconnectAttempts} attempts`,
+          ),
+        );
+      }
+      return;
+    }
+
+    const attempt = ++this.reconnectAttempts;
+    // Exponential backoff with a cap, so a provider restart is survivable
+    // without hammering it while it is down.
+    const delay = Math.min(8_000, 500 * 2 ** (attempt - 1));
+    const timer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (this.closed) return;
+      this.connect()
+        .then(() => {
+          // Recovered: reset so a later blip gets a full budget again.
+          this.reconnectAttempts = 0;
+          this.reportedDisconnect = false;
+          console.log("[STT/Deepgram] reconnected");
+        })
+        .catch(() => {
+          // Still down; back off and try again within the attempt budget.
+          this.scheduleReconnect();
+        });
+    }, delay);
+    if (typeof timer.unref === "function") timer.unref();
+    this.reconnectTimer = timer;
+  }
+
+  /** Marks the stream as permanently closed, cancelling any pending reconnect. */
+  private cancelReconnect(): void {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
   }
 
   /** Surface a stream failure without emitting a fatal `error` event. */
@@ -262,8 +352,10 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
   }
 
   async close(): Promise<void> {
+    // Idempotent, and no reconnect can be armed for a closed stream.
     if (this.closed) return;
     this.closed = true;
+    this.cancelReconnect();
     this.releaseFinalWaiters();
 
     const ws = this.ws;

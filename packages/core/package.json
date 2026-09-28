@@ -1,6 +1,6 @@
 {
   "name": "felona-voice",
-  "version": "0.2.5",
+  "version": "3.0.0",
   "description": "Voice agent framework powered by JEV (Joint Embedding Vectors) for dynamic conversation flow",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -48,14 +48,23 @@
   "license": "MIT",
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
-    "werift": "^0.24.4",
     "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "werift": "^0.24.4"
+  },
+  "peerDependenciesMeta": {
+    "werift": {
+      "optional": true,
+      "description": "Only required for WebRTCTransport. Loaded lazily, so the rest of the framework works without it."
+    }
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/ws": "^8.5.12",
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
+    "vitest": "^2.0.0",
+    "werift": "^0.24.4"
   },
   "engines": {
     "node": ">=20.0.0"

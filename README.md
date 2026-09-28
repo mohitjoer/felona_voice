@@ -10,7 +10,7 @@
   <a href="https://www.npmjs.com/package/felona-voice"><img src="https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6" alt="npm version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square" alt="License: MIT" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square" alt="TypeScript" /></a>
-  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-62%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
+  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-584%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-green.svg?style=flat-square" alt="Node.js" /></a>
   <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square" alt="PRs Welcome" /></a>
 </p>
@@ -297,6 +297,24 @@ examples/
 ├── basic-greeting/     # Minimal 3-action starter agent
 ├── customer-support/   # Multi-action support agent with tool calling
 └── voice-graph-flow/   # Stateful conversation graph flow example
+
+## Production Readiness
+
+Defaults that are enforced without configuration: a finite concurrency ceiling,
+a maximum call duration, deadlines and retry on every outbound request, capped
+per-call audio buffers, aborted TTS bodies on barge-in, and a TTS stream that is
+cancelled rather than abandoned. Metrics, JSON logging, per-call cost tracking,
+guardrails, and answering-machine detection are opt-in.
+
+Start with **[docs/PRODUCTION.md](./docs/PRODUCTION.md)** — it covers what the
+framework does *not* do for you (rate limiting, compliance, load testing) as
+well, because those are the parts that are easy to assume.
+
+Newer capabilities: **[docs/AGENT_CAPABILITIES.md](./docs/AGENT_CAPABILITIES.md)**
+(LLM-backed actions, background cancellation, guardrails, voicemail detection).
+
+> ⚠️ **Breaking:** Twilio webhook signature validation now fails closed. See
+> [the telephony guide](./docs/TELEPHONY_TWILIO_GUIDE.md#breaking-change-webhook-authentication-is-now-required).
 
 ## Roadmap
 

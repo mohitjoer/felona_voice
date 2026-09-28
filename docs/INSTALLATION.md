@@ -165,14 +165,22 @@ console.log("Agent listening for audio streams on ws://localhost:8080");
 
 ## 🧩 6. Optional Dependencies
 
-### Predictor Neural Network (ONNX Runtime)
-If you want to train and load an offline MLP predictor network instead of cosine vector matching:
+### WebRTC stack
+`WebRTCTransport` needs a WebRTC implementation. It is an *optional* peer
+dependency, so install it only if you use that transport:
 
 ```bash
-npm install onnxruntime-node
+npm install werift
 ```
 
-Felona Voice automatically checks if `onnxruntime-node` is present and enables hardware-accelerated ONNX graph evaluation.
+Without it, every other transport works normally and `WebRTCTransport` throws a
+clear error on `start()`. You can also supply your own stack via
+`createPeerConnection` / `createAudioTrack`.
+
+### External session store
+To run more than one process against the same sessions, implement `SessionStore`
+and pass it as `sessions: { store }`. The pipeline reads turns and slots back
+from the store on start, so a call can resume on a different node.
 
 ---
 
@@ -197,4 +205,4 @@ Felona Voice automatically checks if `onnxruntime-node` is present and enables h
 
 - Check out the **[Architecture & Core Principles](./ARCHITECTURE.md)** to understand how JEV routes actions without a model call.
 - Explore the **[Complete API Reference](./API_REFERENCE.md)** for full class and configuration details.
-- Read the **[VoiceGraph Guide](./VOICE_GRAPH_GUIDE.md)** to build stateful conversational graphs.
+- Read the **[VoiceGraph API Reference](./API_REFERENCE.md#1-voicegraphtstate--compiledvoicegraphtstate)** to build stateful conversational graphs.

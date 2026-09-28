@@ -1,3 +1,4 @@
+import { streamPcm } from "./stream-pcm.js";
 import type { TTSProvider, TTSOptions, AudioChunk } from "../types.js";
 
 /**
@@ -29,47 +30,22 @@ export class DeepgramTTS implements TTSProvider {
     url.searchParams.set("encoding", "linear16");
     url.searchParams.set("sample_rate", "16000");
 
-    const response = await fetch(url.toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Token ${this.apiKey}`,
+    yield* streamPcm(
+      url.toString(),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Token ${this.apiKey}`,
+        },
+        body: JSON.stringify({ text }),
       },
-      body: JSON.stringify({ text }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Deepgram TTS failed: ${response.status} ${error}`);
-    }
-
-    if (!response.body) {
-      throw new Error("Deepgram TTS returned no response body");
-    }
-
-    const reader = response.body.getReader();
-    let timestampMs = 0;
-    const bytesPerSecond = 16000 * 2; // 16kHz, 16-bit mono = 32,000 bytes/sec
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk: AudioChunk = {
-          data: Buffer.from(value),
-          sampleRate: 16000,
-          channels: 1,
-          bitDepth: 16,
-          timestampMs,
-        };
-
-        timestampMs += (value.length / bytesPerSecond) * 1000;
-        yield chunk;
-      }
-    } finally {
-      reader.releaseLock();
-    }
+      {
+        sampleRate: 16000,
+        providerLabel: "Deepgram TTS",
+        signal: options?.signal,
+      },
+    );
   }
 }
 

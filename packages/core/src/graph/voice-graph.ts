@@ -67,7 +67,7 @@ export type { GraphData, VisualizeOptions, VisualizeResult };
  *
  * Implements conversational `.invoke()`, `.simulate()`, and `.drawMermaid()`.
  */
-export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<string, unknown>> {
+export class CompiledVoiceGraph<TState extends object = Record<string, unknown>> {
   private readonly nodes: Map<string, NodeOptions<TState>>;
   private readonly edges: Map<string, Set<string>>;
   private readonly entryPoint: string;
@@ -438,7 +438,7 @@ export class CompiledVoiceGraph<TState extends Record<string, unknown> = Record<
  * console.log(reply.response); // "Order ACM-9281 is out for delivery today!"
  * ```
  */
-export class VoiceGraph<TState extends Record<string, unknown> = Record<string, unknown>> {
+export class VoiceGraph<TState extends object = Record<string, unknown>> {
   private nodes = new Map<string, NodeOptions<TState>>();
   private edges = new Map<string, Set<string>>();
   private entryPoint?: string;

@@ -26,6 +26,21 @@ import {
   makeTwilioCall,
 } from "felona-voice";
 
+/**
+ * Reads a required environment variable.
+ *
+ * `process.env.X` is `string | undefined`, so passing it straight to an API
+ * expecting `string` is both a type error and a runtime failure with an
+ * unhelpful message. Failing here names the variable that is missing.
+ */
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing ${name}. Export it before starting: ${name}="..."`);
+  }
+  return value;
+}
+
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_DOMAIN = process.env.PUBLIC_DOMAIN || `localhost:${PORT}`;
 
@@ -33,7 +48,7 @@ const PUBLIC_DOMAIN = process.env.PUBLIC_DOMAIN || `localhost:${PORT}`;
 const phoneAgent = createAgent("Hotel Front Desk")
   .system("You are a professional hotel front desk receptionist. Be concise, polite, and helpful.")
   .deepgram({
-    apiKey: process.env.DEEPGRAM_API_KEY,
+    apiKey: requireEnv("DEEPGRAM_API_KEY"),
     ttsVoice: "aura-asteria-en",
   })
   .action(

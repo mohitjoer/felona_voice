@@ -245,7 +245,17 @@ export class CallSupervisor {
     this.handle = null;
     if (!session) return;
     try {
-      await this.transport.stop();
+      // Scoped to this session. `transport.stop()` tears down the whole server
+      // and every concurrent call, so a supervisor detaching from one call
+      // would drop every other caller on the process.
+      if (this.transport.closeSession) {
+        await this.transport.closeSession(this.sessionId);
+      }
+      // Fall back for transports that cannot address a single session. Better
+      // an over-broad teardown than a supervisor stuck on a dead call.
+      else {
+        await this.transport.stop();
+      }
     } catch {
       // Already gone.
     }

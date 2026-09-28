@@ -1,0 +1,229 @@
+name: PR Checks
+
+# The contribution gate. Everything a pull request must pass before review.
+#
+# Kept separate from ci.yml: this one runs on every PR and pull_request event
+# so a contributor gets a verdict quickly, and it checks things that only
+# matter for a proposed change (pack/install smoke test, docs integrity).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Fast feedback: typecheck, lint, build, test ──────────────────────────
+  verify:
+    name: Build, typecheck, lint, test (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Node 20 is the declared minimum, so a break there has to be caught
+      # before merge rather than after.
+      fail-fast: false
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          # A scalar, not a list: an array is only valid in strategy.matrix.
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      # `npm ci` alone. A `npm ci || npm install` fallback silently resolves
+      # caret ranges against whatever is newest, so a green run would not
+      # prove the committed lockfile is installable.
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  # ── The published artifact must actually work ────────────────────────────
+  # A green build does not prove the package imports. This installs the packed
+  # tarball into a clean project and drives the public API, which is how the
+  # interact() guardrail gap was found after every unit test had passed.
+  package-smoke:
+    name: Package installs and works
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Pack the core package
+        run: npm pack --workspace packages/core --pack-destination /tmp/pkg
+
+      - name: Install it into a clean project
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm pkg set type=module >/dev/null
+          npm install /tmp/pkg/felona-voice-*.tgz
+
+      - name: Drive the public API
+        run: |
+          cat > smoke.mjs <<'EOF'
+          import { createAgent, FelAgent, defineAction, createOpenAILLM,
+                   createAnthropicLLM, blockPattern, maxLength, retry,
+                   fetchWithTimeout, VoicemailDetector, createVoicemailDetector,
+                   CostTracker, MetricsRegistry, createSessionManager,
+                   MemorySessionStore } from "felona-voice";
+
+          const fail = (m) => { throw new Error(`smoke: ${m}`); };
+
+          // A real agent answers a question with no network access.
+          const agent = createAgent("Smoke")
+            .system("You are terse.")
+            .action("order", "check a delivery or order status", async () => "It shipped.")
+            .action("fallback", "anything else", async () => "Let me check.")
+            .build();
+          const reply = await agent.interact("where is my order?");
+          if (reply.action.id !== "order") fail(`routing: got ${reply.action.id}`);
+
+          // Guardrails must actually gate, on both input and output.
+          let ran = false;
+          const guarded = new FelAgent({
+            name: "t", systemPrompt: "t",
+            stt: { provider: "deepgram", apiKey: "k" },
+            tts: { provider: "deepgram", apiKey: "k" },
+            guardrails: { input: [() => ({ action: "block", reason: "x" })] },
+            actions: [defineAction({ id: "a", description: "d",
+                                     handler: async () => { ran = true; return "ok"; } })],
+          });
+          const blocked = await guarded.interact({ userMessage: "hi", sessionId: "s" });
+          if (ran) fail("guardrail did not block the handler");
+          if (blocked.action.id !== "__blocked__") fail(`blocked id: ${blocked.action.id}`);
+
+          // Cancellation must reach handlers.
+          let sawSignal = null;
+          const sig = new FelAgent({
+            name: "t", systemPrompt: "t",
+            stt: { provider: "deepgram", apiKey: "k" },
+            tts: { provider: "deepgram", apiKey: "k" },
+            actions: [defineAction({ id: "a", description: "do a thing",
+                                     handler: async (ctx) => { sawSignal = ctx.signal; return "ok"; } })],
+          });
+          await sig.interact({ userMessage: "hello", sessionId: "q" });
+          if (!sawSignal) fail("handler did not receive an AbortSignal");
+
+          // Every documented export must exist.
+          for (const [name, v] of Object.entries({
+            createOpenAILLM, createAnthropicLLM, blockPattern, maxLength,
+            retry, fetchWithTimeout, createVoicemailDetector, createSessionManager,
+          })) if (typeof v !== "function") fail(`export ${name} missing`);
+          if (!(createVoicemailDetector() instanceof VoicemailDetector)) fail("voicemail");
+          if (new CostTracker().get("x").estimatedUsd !== 0) fail("cost");
+          if (new MemorySessionStore() === undefined) fail("store");
+          new MetricsRegistry().increment("x");
+
+          await agent.stop();
+          await guarded.stop();
+          await sig.stop();
+          console.log("smoke: ok");
+          EOF
+          cp smoke.mjs /tmp/consumer/ && cd /tmp/consumer && node smoke.mjs
+
+      - name: werift stays optional
+        run: |
+          # The WebRTC stack is an optional peer. If a clean install of the
+          # framework pulls it in, the "optional" promise is not being kept
+          # and every consumer inherits a WebRTC stack they did not ask for.
+          if [ -d /tmp/consumer/node_modules/werift ]; then
+            echo "werift was auto-installed; it must stay an optional peer" >&2
+            exit 1
+          fi
+
+  # ── Docs must not rot ────────────────────────────────────────────────────
+  # A dead link and a stale test-count badge are both claims the code does not
+  # support, which is the one thing the project rules forbid.
+  docs:
+    name: Docs integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - run: npm ci
+
+      - name: Relative links and anchors resolve
+        run: node scripts/check-docs.mjs
+
+      - name: Test-count badge matches reality
+        run: node scripts/check-badge.mjs
+
+      - name: No undocumented ONNX claims
+        run: |
+          # loadPredictor() throws "not supported"; documentation that
+          # describes ONNX evaluation is a claim the code does not honour.
+          if grep -rniE "onnx" docs/ README.md; then
+            echo "Documentation mentions ONNX, which the code does not support" >&2
+            exit 1
+          fi
+
+  # ── Concurrency must not regress ─────────────────────────────────────────
+  loadtest:
+    name: Concurrency smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - run: npm ci
+
+      # A low call count on purpose: this is a leak and stall detector, not a
+      # benchmark. It fails if turns stop completing or memory grows without
+      # bound, which is what a regression in the per-call path looks like.
+      - name: Drive concurrent calls
+        run: npm run loadtest --silent -- 150 3
+
+  # ── Supply chain ─────────────────────────────────────────────────────────
+  audit:
+    name: Production dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      # Production dependencies only. The dev tree carries advisories that
+      # never ship, and failing on them trains people to ignore the gate.
+      - run: npm audit --omit=dev --audit-level=high
