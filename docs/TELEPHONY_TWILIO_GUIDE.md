@@ -4,6 +4,29 @@ Felona Voice provides built-in, first-class support for telephone calls over mob
 
 ---
 
+## ⚠️ Breaking change: webhook authentication is now required
+
+Earlier versions accepted **unsigned** webhook requests, which meant anyone who
+could reach the port could place calls into your agent. Signature validation
+now **fails closed**: a request that cannot be verified is rejected with `403`.
+
+If you are upgrading an unauthenticated setup, either configure the two values
+below, or opt out explicitly:
+
+```typescript
+.twilio({
+  authToken: process.env.TWILIO_AUTH_TOKEN,  // enables X-Twilio-Signature
+  publicUrl: "https://voice.example.com",   // the URL Twilio actually calls
+  // allowUnverified: true,  // only if the webhook is not publicly reachable
+})
+```
+
+The `/media` media WebSocket is gated by the same `authToken` when it is set.
+`agent.listenTwilio()` accepts `authToken` and `publicUrl` directly if you are
+not using the builder.
+
+---
+
 ## ⚡ Key Highlights
 
 - **Native G.711 μ-law (PCMU) Transcoding**: Built-in, zero-dependency, microsecond bi-directional conversion between 8kHz μ-law phone audio and 16-bit linear PCM (8kHz, 16kHz, 24kHz, 48kHz).
@@ -39,11 +62,18 @@ const agent = createAgent("Receptionist")
     path: "/media",
     webhookPath: "/voice",
     greeting: "Thank you for calling. Connecting to customer service.",
+    // Required. Without these the webhook rejects every request with 403.
+    authToken: process.env.TWILIO_AUTH_TOKEN,
+    publicUrl: process.env.PUBLIC_URL, // e.g. "https://voice.example.com"
   });
 
 // Start the server (serves TwiML at /voice and WebSocket at /media):
 await agent.listenTwilio({ port: 8080 });
 ```
+
+`publicUrl` must be the URL Twilio actually requests, because Twilio's
+signature covers that exact URL. `ngrok` URLs change between runs, so a
+hardcoded `publicUrl` will fail validation after a restart.
 
 ---
 

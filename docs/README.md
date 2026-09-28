@@ -17,11 +17,14 @@ Welcome to the comprehensive documentation for **Felona Voice** — the ultra-lo
 | **[Complete API Reference](./API_REFERENCE.md)** | Exhaustive documentation of every class, function, method, interface, and configuration parameter. |
 | **[API Reference — VoiceGraph](./API_REFERENCE.md#1-voicegraphtstate--compiledvoicegraphtstate)** | How to build stateful conversational graphs with directed edges and fallback protection. |
 | **[API Reference — Visualization](./API_REFERENCE.md#4-visualization-functions-packagescoresrcgraphvisualizets)** | Generate instant Markdown (`.md`) diagrams, terminal ASCII flowcharts, and Mermaid diagrams via API or CLI. |
-| **[API Reference — MCP Tools](./API_REFERENCE.md#9-mcp-tool-support-packagessorctoolsmcpts)** | Borrow tools from any MCP server and use them like native ones. |
-| **[API Reference — OpenTelemetry](./API_REFERENCE.md#10-opentelemetry-tracing-packagessrcobservability)** | Span-per-turn tracing that stays a no-op until you register a provider. |
-| **[API Reference — WebRTC](./API_REFERENCE.md#11-webrtc-transport-packagessrctransportwebrtcts)** | Browser and mobile clients: signalling, PCMU/RTP audio, barge-in. |
-| **[API Reference — Call Analytics](./API_REFERENCE.md#8-call-analytics-packagessrcanalytics)** | Post-call outcome, sentiment and escalation scoring. |
-| **[Telephony & Twilio Guide](./TELEPHONY_TWILIO_GUIDE.md)** | Connect voice agents to mobile phone calls via Twilio Media Streams, G.711 μ-law transcoding, and TwiML. |
+| **[API Reference — MCP Tools](./API_REFERENCE.md#9-mcp-tool-support-packagescoresrctoolsmcpts)** | Borrow tools from any MCP server and use them like native ones. |
+| **[API Reference — OpenTelemetry](./API_REFERENCE.md#10-opentelemetry-tracing-packagescoresrcobservability)** | Span-per-turn tracing that stays a no-op until you register a provider. |
+| **[API Reference — WebRTC](./API_REFERENCE.md#11-webrtc-transport-packagescoresrctransportwebrtcts)** | Browser and mobile clients: signalling, PCMU/RTP audio, barge-in. |
+| **[API Reference — Call Analytics](./API_REFERENCE.md#8-call-analytics-packagescoresrcanalytics)** | Post-call outcome, sentiment and escalation scoring. |
+| **[Telephony & Twilio Guide](./TELEPHONY_TWILIO_GUIDE.md)** | Connect voice agents to mobile phone calls via Twilio Media Streams, G.711 μ-law transcoding, and TwiML. **Webhook auth is now required.** |
+| **[Changelog](../CHANGELOG.md)** | Release notes. v3.0.0 contains breaking changes to Twilio auth, concurrency defaults, and MCP environment inheritance. |
+| **[Production Guide](./PRODUCTION.md)** | What is enforced by default, what you must configure, metrics, logging, cost tracking, guardrails, horizontal scaling, extension points, pre-flight checklist. |
+| **[Agent Capabilities](./AGENT_CAPABILITIES.md)** | LLM-backed actions, background cancellation on interruption, non-blocking hooks, guardrails, voicemail detection, mid-call prompt override, noise cancellation, interruption tuning. |
 
 ---
 
