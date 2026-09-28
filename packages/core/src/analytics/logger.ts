@@ -30,14 +30,25 @@ export class CallLogger {
   private readonly logDir: string;
   private readonly level: "debug" | "info" | "warn" | "error";
   private readonly enabled: boolean;
+  private readonly format: "text" | "json";
 
   constructor(options?: {
     logDir?: string;
     level?: "debug" | "info" | "warn" | "error";
     enabled?: boolean;
+    /**
+     * Output shape. Default: `text`.
+     *
+     * `json` emits one JSON object per line, which is what a log shipper
+     * (Loki, CloudWatch, Datadog) can index and query. `text` stays readable
+     * in a terminal. The choice is the operator's because it depends on where
+     * the logs go, not on how the framework behaves.
+     */
+    format?: "text" | "json";
   }) {
     this.logDir = options?.logDir ?? "";
     this.level = options?.level ?? "info";
+    this.format = options?.format ?? "text";
     // Never persist call logs to disk unless user explicitly provided a logDir
     this.enabled = options?.enabled !== undefined ? options.enabled : Boolean(options?.logDir);
   }
@@ -93,8 +104,26 @@ export class CallLogger {
     const levels = { debug: 0, info: 1, warn: 2, error: 3 };
     if (levels[level] < levels[this.level]) return;
 
-    const prefix = `[Felona/${level.toUpperCase()}]`;
     const timestamp = new Date().toISOString();
+
+    if (this.format === "json") {
+      // One object per line, so a shipper can parse it without a regex and a
+      // human can still read it.
+      const entry = JSON.stringify({
+        time: timestamp,
+        level,
+        component: "felona",
+        msg: message,
+        ...(data ?? {}),
+      });
+      if (level === "error") console.error(entry);
+      else if (level === "warn") console.warn(entry);
+      else if (level === "debug") console.debug(entry);
+      else console.log(entry);
+      return;
+    }
+
+    const prefix = `[Felona/${level.toUpperCase()}]`;
     const line = `${prefix} ${timestamp} ${message}`;
 
     // Route by severity so errors and warnings are visible in default
@@ -127,8 +156,14 @@ export interface CallLogEntry {
 export interface JEVDecisionLog {
   /** Timestamp of the decision */
   timestampMs: number;
-  /** The context string that was embedded */
-  contextSummary: string;
+  /**
+   * Fingerprint of the embedded context, not the context itself.
+   *
+   * Previously this held the first 200 characters of what the caller said and
+   * was never read back — a second verbatim copy of caller speech in the call
+   * log, which for card-by-DTMF flows means a second copy of the card number.
+   */
+  contextFingerprint: string;
   /** The action that was selected */
   selectedAction: string;
   /** Confidence score */

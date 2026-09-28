@@ -1,3 +1,4 @@
+import { streamPcm } from "./stream-pcm.js";
 import type { TTSProvider, TTSOptions, AudioChunk } from "../types.js";
 
 export type OpenAIVoice =
@@ -45,54 +46,28 @@ export class OpenAITTS implements TTSProvider {
     const voice = options?.voice ?? this.defaultVoice;
     const speed = options?.speed ?? this.defaultSpeed;
 
-    const response = await fetch(`${this.baseUrl}/audio/speech`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
+    yield* streamPcm(
+      `${this.baseUrl}/audio/speech`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.model,
+          input: text,
+          voice,
+          response_format: "pcm", // Raw 24kHz 16-bit mono PCM
+          speed,
+        }),
       },
-      body: JSON.stringify({
-        model: this.model,
-        input: text,
-        voice,
-        response_format: "pcm", // Raw 24kHz 16-bit mono PCM
-        speed,
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`OpenAI TTS failed: ${response.status} ${error}`);
-    }
-
-    if (!response.body) {
-      throw new Error("OpenAI TTS returned no body");
-    }
-
-    const reader = response.body.getReader();
-    let timestampMs = 0;
-    const sampleRate = 24000;
-    const bytesPerSecond = sampleRate * 2; // 24kHz * 16-bit mono = 48,000 bytes/sec
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk: AudioChunk = {
-          data: Buffer.from(value),
-          sampleRate,
-          channels: 1,
-          bitDepth: 16,
-          timestampMs,
-        };
-
-        timestampMs += (value.length / bytesPerSecond) * 1000;
-        yield chunk;
-      }
-    } finally {
-      reader.releaseLock();
-    }
+      {
+        sampleRate: 24000,
+        providerLabel: "OpenAI TTS",
+        signal: options?.signal,
+      },
+    );
   }
 }
 

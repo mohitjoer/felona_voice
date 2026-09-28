@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import type { IncomingMessage } from "node:http";
+import http from "node:http";
+import type { IncomingMessage, Server } from "node:http";
+import { createOpsHandler } from "./ops.js";
+import type { MetricsRegistry } from "../observability/metrics.js";
 import { WebSocketServer, WebSocket } from "ws";
 import type {
   Transport,
@@ -29,6 +32,16 @@ export interface WebSocketTransportOptions {
   maxPayloadBytes?: number;
   /** Maximum simultaneous connections. Default: Infinity. */
   maxConnections?: number;
+  /**
+   * Registry scraped by the transport's `/metrics` endpoint.
+   * Omit to serve no metrics route.
+   */
+  metrics?: MetricsRegistry;
+  /**
+   * Serve `/health` on this transport's HTTP server. Default: true.
+   * Set false when live call counts should not be reachable.
+   */
+  exposeHealth?: boolean;
 }
 
 interface SessionEntry {
@@ -53,6 +66,14 @@ export class WebSocketTransport extends EventEmitter implements Transport {
   private static readonly MAX_BUFFERED_BYTES = 256 * 1024;
 
   private wss: WebSocketServer | null = null;
+  /**
+   * HTTP server carrying `/health` and `/metrics`.
+   *
+   * The WebSocket server alone cannot answer an HTTP probe, so this process
+   * previously had no liveness endpoint at all.
+   */
+  private httpServer: Server | null = null;
+  private ownsHttpServer = false;
   private sessions: Map<string, SessionEntry> = new Map();
   private options: WebSocketTransportOptions = {};
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -67,20 +88,65 @@ export class WebSocketTransport extends EventEmitter implements Transport {
     this.options = { ...this.options, ...options };
   }
 
-  async start(options: TransportOptions & { path?: string }): Promise<void> {
+  /** Serves `/health` and `/metrics`. */
+  private opsHandler?: (req: IncomingMessage, res: import("node:http").ServerResponse) => boolean;
+
+  private buildOps(): void {
+    this.opsHandler = createOpsHandler({
+      metrics: this.options.metrics,
+      exposeHealth: this.options.exposeHealth !== false,
+      getState: () => ({
+        provider: "websocket",
+        activeCalls: this.sessions.size,
+        maxConnections: this.options.maxConnections,
+      }),
+    });
+  }
+
+  async start(options: TransportOptions & { path?: string; server?: Server }): Promise<void> {
     const path = options.path ?? this.options.path;
+    this.buildOps();
+
+    // A caller-supplied server is how a deployment shares one port with its
+    // own routes; the ops handler chains onto it rather than replacing it.
+    if (options.server) {
+      this.httpServer = options.server;
+      this.ownsHttpServer = false;
+      options.server.on("request", (req, res) => {
+        if (this.opsHandler?.(req, res)) return;
+      });
+    } else if (this.opsHandler) {
+      this.httpServer = http.createServer((req, res) => {
+        if (this.opsHandler?.(req, res)) return;
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
+      });
+      this.ownsHttpServer = true;
+    }
 
     return new Promise((resolve, reject) => {
       try {
-        this.wss = new WebSocketServer({
-          port: options.port,
-          host: options.host ?? "0.0.0.0",
-          path,
-          // Compressing PCM audio burns CPU for no meaningful size win.
-          perMessageDeflate: false,
-          maxPayload: this.options.maxPayloadBytes ?? 1024 * 1024,
-          verifyClient: this.buildVerifyClient(),
-        });
+        // Sharing the HTTP server when we own one keeps /health, /metrics and
+        // the media path on a single port, which is what an orchestrator
+        // expects to probe.
+        const attachTo = options.server ?? (this.ownsHttpServer ? this.httpServer : undefined);
+        this.wss = attachTo
+          ? new WebSocketServer({
+              server: attachTo,
+              path,
+              // Compressing PCM audio burns CPU for no meaningful size win.
+              perMessageDeflate: false,
+              maxPayload: this.options.maxPayloadBytes ?? 1024 * 1024,
+              verifyClient: this.buildVerifyClient(),
+            })
+          : new WebSocketServer({
+              port: options.port,
+              host: options.host ?? "0.0.0.0",
+              path,
+              perMessageDeflate: false,
+              maxPayload: this.options.maxPayloadBytes ?? 1024 * 1024,
+              verifyClient: this.buildVerifyClient(),
+            });
 
         this.wss.on("connection", (ws, req) => {
           if (
@@ -106,6 +172,10 @@ export class WebSocketTransport extends EventEmitter implements Transport {
           this.startHeartbeat();
           resolve();
         });
+
+        if (this.ownsHttpServer && this.httpServer && !options.server) {
+          this.httpServer.listen(options.port, options.host ?? "0.0.0.0");
+        }
 
         this.wss.on("error", (error) => {
           // Before startup this must reject the pending promise; afterwards
@@ -197,6 +267,24 @@ export class WebSocketTransport extends EventEmitter implements Transport {
     this.heartbeatTimer.unref?.();
   }
 
+  /**
+   * Tears down one session, leaving the server and every other call running.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return;
+    // Remove the entry before closing so the socket's own close handler does
+    // not report a disconnect we are already handling.
+    this.sessions.delete(sessionId);
+    entry.session.state = "ended";
+    this.disconnectHandler?.(entry.session);
+    try {
+      entry.ws.close();
+    } catch {
+      // Already closed.
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -204,22 +292,36 @@ export class WebSocketTransport extends EventEmitter implements Transport {
     }
 
     // Close all active sessions
-    for (const { ws, session } of this.sessions.values()) {
-      session.state = "ended";
-      ws.close();
-      this.disconnectHandler?.(session);
+    for (const sessionId of [...this.sessions.keys()]) {
+      await this.closeSession(sessionId);
     }
     this.sessions.clear();
 
     // Shut down the server
     return new Promise((resolve) => {
+      const done = () => {
+        console.log("[Transport] WebSocket server stopped");
+        resolve();
+      };
       if (this.wss) {
         this.wss.close(() => {
-          console.log("[Transport] WebSocket server stopped");
-          resolve();
+          // Only a server this transport opened may be closed here.
+          if (this.ownsHttpServer && this.httpServer) {
+            this.httpServer.close(() => {
+              this.httpServer = null;
+              done();
+            });
+          } else {
+            done();
+          }
+        });
+      } else if (this.ownsHttpServer && this.httpServer) {
+        this.httpServer.close(() => {
+          this.httpServer = null;
+          done();
         });
       } else {
-        resolve();
+        done();
       }
     });
   }
@@ -362,13 +464,56 @@ export class WebSocketTransport extends EventEmitter implements Transport {
     ws.on("close", () => {
       console.log(`[Transport] Session ended: ${sessionId}`);
       session.state = "ended";
-      this.disconnectHandler?.(session);
-      this.sessions.delete(sessionId);
+      // Delete first and only report if this handler owned the entry. A socket
+      // close is asynchronous, so a `stop()` or `closeSession()` that tore the
+      // session down earlier has already removed it — reporting again would
+      // fire onDisconnect twice, which runs pipeline teardown and call logging
+      // a second time and writes a duplicate call log.
+      const owned = this.sessions.delete(sessionId);
+      if (owned) {
+        this.disconnectHandler?.(session);
+      }
     });
 
     ws.on("error", (error) => {
       console.error(`[Transport] Session error (${sessionId}):`, error.message);
     });
+  }
+
+  /**
+   * Identity fields the server establishes and the client may not overwrite.
+   *
+   * These decide who is calling and where a call gets routed, so treating them
+   * as client-supplied would let any caller impersonate another or redirect a
+   * transfer.
+   */
+  private static readonly PROTECTED_METADATA = new Set([
+    "id",
+    "from",
+    "to",
+    "callSid",
+    "caller",
+    "phoneNumber",
+    "accountSid",
+    "streamSid",
+    "telephony",
+  ]);
+
+  /**
+   * Merges a client-supplied metadata patch, skipping server-owned fields.
+   *
+   * Prototype-polluting keys are dropped outright: `__proto__` on a plain
+   * object literal can walk up the prototype chain.
+   */
+  private applyMetadataPatch(session: Session, patch: Record<string, unknown>): void {
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+      if (WebSocketTransport.PROTECTED_METADATA.has(key)) {
+        console.warn(`[Transport] Ignored client attempt to overwrite "${key}"`);
+        continue;
+      }
+      session.metadata[key] = value;
+    }
   }
 
   private handleControlMessage(
@@ -380,9 +525,14 @@ export class WebSocketTransport extends EventEmitter implements Transport {
 
     switch (message.type) {
       case "session.update":
-        // Client can update session metadata
+        // Client can annotate session metadata, but not overwrite fields the
+        // server owns. A blind `Object.assign` let a client rewrite its own
+        // `from`/`callSid`, which routing and call handling then trusted.
         if (message.metadata && typeof message.metadata === "object") {
-          Object.assign(entry.session.metadata, message.metadata);
+          this.applyMetadataPatch(
+            entry.session,
+            message.metadata as Record<string, unknown>,
+          );
         }
         break;
 

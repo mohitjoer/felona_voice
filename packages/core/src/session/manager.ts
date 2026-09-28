@@ -17,6 +17,17 @@ import { MemorySessionStore } from "./memory-store.js";
  * Pluggable store backend allows scaling out across multiple servers or worker processes
  * using shared stores (such as Redis) while preserving caller context, memory, and slots.
  */
+
+/**
+ * Default ceiling on concurrent calls per agent instance.
+ *
+ * Deliberately finite. Every live call holds a pipeline, VAD, preprocessor,
+ * STT socket and conversation memory, so an unbounded default lets one process
+ * accept as many calls as the network offers before memory or CPU gives out.
+ * Override it with `sessions({ maxConcurrent })` to match real capacity.
+ */
+export const DEFAULT_MAX_CONCURRENT = 100;
+
 export class SessionManager extends EventEmitter implements SessionAccessor {
   private store: SessionStore;
   private hasUserDatabase: boolean;
@@ -45,7 +56,10 @@ export class SessionManager extends EventEmitter implements SessionAccessor {
           this.totalExpired++;
         },
       });
-    this.maxConcurrent = options?.maxConcurrent ?? Infinity;
+    // A finite default, not Infinity: concurrency has to be bounded before it
+    // is a problem, because by the time it is one the process is already
+    // holding an unbounded number of live STT sockets and call buffers.
+    this.maxConcurrent = options?.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.ttlMs = options?.ttlMs ?? 30 * 60 * 1000;
   }
 

@@ -30,6 +30,8 @@
  * audio only once.
  */
 
+import { createOpsHandler } from "./ops.js";
+import type { MetricsRegistry } from "../observability/metrics.js";
 import { EventEmitter } from "node:events";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -100,6 +102,22 @@ export interface WebRTCTransportOptions {
    */
   maxConnections?: number;
   /**
+   * Registry scraped by the transport's `/metrics` endpoint.
+   * Omit to serve no metrics route.
+   */
+  metrics?: MetricsRegistry;
+  /**
+   * Serve `/health` on this transport's own server. Default: true.
+   * Set false when live call counts should not be reachable.
+   */
+  exposeHealth?: boolean;
+  /**
+   * How long a peer may stay `disconnected` before the session is reaped.
+   * Default: 30000ms. A peer that never returns to a terminal state would
+   * otherwise hold its connection and concurrency slot indefinitely.
+   */
+  disconnectedTimeoutMs?: number;
+  /**
    * Milliseconds to wait for ICE gathering to finish before answering.
    *
    * Default: 3000. An answer with no candidates in it cannot connect on its
@@ -146,6 +164,8 @@ interface WebRTCSessionEntry {
   closed: boolean;
   /** Unsubscribers for peer events, run on teardown so they do not leak. */
   disposers: Array<() => void>;
+  /** Deadline for a peer that goes `disconnected` and never recovers. */
+  disconnectedTimer?: NodeJS.Timeout;
 }
 
 const MAX_SIGNALING_BODY_BYTES = 256 * 1024;
@@ -154,6 +174,8 @@ export class WebRTCTransport extends EventEmitter implements Transport {
   private server: Server | null = null;
   /** Whether stop() may close the server. False for a caller-supplied one. */
   private ownsServer = false;
+  /** Serves /health and /metrics on the signalling server. */
+  private opsHandler?: (req: IncomingMessage, res: ServerResponse) => boolean;
   private createAudioTrack: (() => MediaTrackLike) | null = null;
   private readonly sessions = new Map<string, WebRTCSessionEntry>();
   private options: WebRTCTransportOptions = {};
@@ -166,6 +188,15 @@ export class WebRTCTransport extends EventEmitter implements Transport {
   constructor(options?: WebRTCTransportOptions) {
     super();
     this.options = { ...this.options, ...options };
+    this.opsHandler = createOpsHandler({
+      metrics: this.options.metrics,
+      exposeHealth: this.options.exposeHealth !== false,
+      getState: () => ({
+        provider: "webrtc",
+        activeCalls: this.sessions.size,
+        maxConnections: this.options.maxConnections,
+      }),
+    });
   }
 
   async start(options: TransportOptions): Promise<void> {
@@ -182,6 +213,9 @@ export class WebRTCTransport extends EventEmitter implements Transport {
     // a deployment shares one port with its own routes, and building the
     // handler into createServer() alone would leave those requests unanswered.
     server.on("request", (req, res) => {
+      // Liveness and metrics take precedence over signalling: an orchestrator
+      // must be able to probe a process that is not expecting calls.
+      if (this.opsHandler && this.opsHandler(req, res)) return;
       void this.handleSignaling(req, res, createPeer);
     });
     this.server = server;
@@ -570,6 +604,14 @@ export class WebRTCTransport extends EventEmitter implements Transport {
     const notify = (state: string) => {
       if (state === "closed" || state === "failed") {
         this.endSession(entry.session.id, state);
+        return;
+      }
+      // `disconnected` is transient — ICE may recover — so it is not torn down
+      // immediately. But a peer that stays disconnected never reaches a
+      // terminal state, so without a deadline the session holds its peer
+      // connection, RTP track and concurrency slot for the life of the process.
+      if (state === "disconnected") {
+        this.scheduleDisconnectedReaper(entry);
       }
     };
 
@@ -579,9 +621,44 @@ export class WebRTCTransport extends EventEmitter implements Transport {
       return;
     }
     // EventEmitter-shaped stacks.
-    peer.on?.("connectionstatechange", (() => {
+    const onStateChange = (() => {
       notify(peer.connectionState ?? "closed");
-    }) as never);
+    }) as never;
+    peer.on?.("connectionstatechange", onStateChange);
+    // Without this disposer the handler outlives teardown, and a peer that
+    // reconnects keeps calling into a session that no longer exists.
+    entry.disposers.push(() => {
+      (peer as { off?: (e: string, h: unknown) => void }).off?.(
+        "connectionstatechange",
+        onStateChange,
+      );
+    });
+  }
+
+  /**
+   * Ends a session that has been disconnected for longer than the grace
+   * period, so a peer that vanishes without a terminal event cannot leak.
+   */
+  private scheduleDisconnectedReaper(entry: WebRTCSessionEntry): void {
+    if (entry.disconnectedTimer) return;
+    const timer = setTimeout(() => {
+      entry.disconnectedTimer = undefined;
+      const live = this.sessions.get(entry.session.id);
+      // Only reap if it is still disconnected; a recovered peer keeps its slot.
+      if (live && live.peer.connectionState === "disconnected") {
+        this.endSession(entry.session.id, "disconnected-timeout");
+      }
+    }, this.options.disconnectedTimeoutMs ?? 30_000);
+    timer.unref?.();
+    entry.disconnectedTimer = timer;
+  }
+
+  /**
+   * Tears down one WebRTC session, leaving the signalling server and every
+   * other session running.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    this.endSession(sessionId, "closed-by-host");
   }
 
   private endSession(sessionId: string, reason: string): void {
@@ -596,6 +673,11 @@ export class WebRTCTransport extends EventEmitter implements Transport {
     if (entry.closed) return;
     entry.closed = true;
     entry.session.state = "ended";
+
+    if (entry.disconnectedTimer) {
+      clearTimeout(entry.disconnectedTimer);
+      entry.disconnectedTimer = undefined;
+    }
 
     for (const dispose of entry.disposers.splice(0)) {
       try {

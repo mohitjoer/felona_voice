@@ -97,6 +97,13 @@ export interface McpStdioTransportOptions {
    */
   env?: Record<string, string>;
   /**
+   * Pass the entire parent environment to the child. Default: false.
+   *
+   * The child receives only PATH/HOME/TMPDIR (plus `env`) unless this is set,
+   * so an MCP server is not handed every API key in the process.
+   */
+  inheritEnv?: boolean;
+  /**
    * What to do with the server's stderr. Default: `forward`.
    *
    * - `forward` — log each line prefixed with the server name.
@@ -212,6 +219,41 @@ export class StdioMcpTransport implements McpTransport {
    * basename: the runtime and the script are what identify the server, and a
    * truncated absolute path loses exactly the part that says which one.
    */
+  /**
+   * Builds the child process environment.
+   *
+   * By default the child gets a minimal environment — PATH, HOME and TMPDIR —
+   * plus whatever `env` supplies. Previously it inherited the entire parent
+   * environment, which handed every STT/TTS/LLM API key and any database
+   * credential in the process to every MCP server, including third-party ones.
+   *
+   * `inheritEnv: true` restores the old behaviour for a server that genuinely
+   * needs it.
+   */
+  private buildChildEnv(): Record<string, string> {
+    if (this.options.inheritEnv) {
+      // A spread of process.env has `string | undefined` values; drop the
+      // undefined ones rather than widening the child's environment type.
+      const inherited: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined) inherited[key] = value;
+      }
+      return { ...inherited, ...this.options.env };
+    }
+    const passthrough = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "NODE_PATH", "LANG"];
+    const base: Record<string, string> = {};
+    for (const key of passthrough) {
+      const value = process.env[key];
+      if (value !== undefined) base[key] = value;
+    }
+    // Windows resolves executables through these rather than PATH alone.
+    for (const key of ["SystemRoot", "PATHEXT", "COMSPEC", "WINDIR"]) {
+      const value = process.env[key];
+      if (value !== undefined) base[key] = value;
+    }
+    return { ...base, ...this.options.env };
+  }
+
   private describeServer(): string {
     const base = (value: string) => value.split(/[\\/]/).pop() || value;
     const first = this.options.args?.[0];
@@ -221,19 +263,27 @@ export class StdioMcpTransport implements McpTransport {
   }
 
   async start(): Promise<void> {
-    if (this.child) throw new Error("MCP stdio transport already started");
+    // A crashed server can be respawned. Previously this threw "already
+    // started" for the life of the process, so one MCP crash left the agent
+    // permanently without its tools.
+    if (this.child) {
+      await this.stopChild();
+    }
+    // `closed` latches only the transport's final shutdown, so a respawn has
+    // to clear it.
+    this.closed = false;
     if (!this.options.command) {
       throw new Error("MCP stdio transport requires a `command` to spawn");
     }
 
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const stdio: ["pipe", "pipe", "pipe"] = ["pipe", "pipe", "pipe"];
-      const child = spawn(this.options.command, this.options.args ?? [], {
-        cwd: this.options.cwd,
-        env: { ...process.env, ...this.options.env },
-        stdio,
-      });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const stdio: ["pipe", "pipe", "pipe"] = ["pipe", "pipe", "pipe"];
+    const child = spawn(this.options.command, this.options.args ?? [], {
+      cwd: this.options.cwd,
+      env: this.buildChildEnv(),
+      stdio,
+    });
       this.child = child;
 
       // A spawn failure (ENOENT, EACCES) arrives as an 'error' event, not a throw.
@@ -329,7 +379,7 @@ export class StdioMcpTransport implements McpTransport {
     // The newline is part of the framing: a server reading line-delimited JSON
     // will not emit an unterminated line, so omitting it silently hangs.
     const payload = `${JSON.stringify(message)}\n`;
-    return new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
       this.child!.stdin.write(payload, (err) => {
         if (err) {
           reject(new Error(`Failed to write to MCP server: ${err.message}`));
@@ -351,6 +401,16 @@ export class StdioMcpTransport implements McpTransport {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.stopChild();
+  }
+
+  /**
+   * Terminates the child process without latching the client closed.
+   *
+   * Split from `close()` so `start()` can respawn a server that died while the
+   * client itself stays usable.
+   */
+  private async stopChild(): Promise<void> {
     const child = this.child;
     this.child = null;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;

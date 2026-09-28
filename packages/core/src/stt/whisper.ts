@@ -7,6 +7,7 @@ import type {
   AudioChunk,
 } from "../types.js";
 import { pcmToWav } from "./wav.js";
+import { AudioBuffer } from "./audio-buffer.js";
 import { MissingCredentialsError } from "./credentials.js";
 
 export interface WhisperSTTOptions {
@@ -16,6 +17,8 @@ export interface WhisperSTTOptions {
   language?: string;
   temperature?: number;
   prompt?: string;
+  /** Deadline for a single transcription request. Default: 15000ms. */
+  timeoutMs?: number;
 }
 
 /**
@@ -52,7 +55,7 @@ export class WhisperSTT implements STTProvider {
 }
 
 class WhisperSTTStream extends EventEmitter implements STTStream {
-  private chunks: Buffer[] = [];
+  private readonly buffer: AudioBuffer;
   private resultHandler: ((result: STTResult) => void) | null = null;
   private errorHandler: ((error: Error) => void) | null = null;
   private isClosed = false;
@@ -62,11 +65,20 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
   constructor(config: WhisperSTTOptions & { keywords?: string[] }) {
     super();
     this.config = config;
+    this.buffer = new AudioBuffer({
+      onDrop: (bytes) =>
+        // Surfaced rather than silent: a caller who never stops talking
+        // should be diagnosable, not just mysteriously less accurate.
+        this.reportError(
+          `audio buffer cap reached, discarded ${bytes} bytes of oldest audio`,
+          new Error("buffer overflow"),
+        ),
+    });
   }
 
   write(chunk: AudioChunk): void {
     if (this.isClosed) return;
-    this.chunks.push(chunk.data);
+    this.buffer.push(chunk.data);
   }
 
   onResult(handler: (result: STTResult) => void): void {
@@ -78,11 +90,16 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
   }
 
   private reportError(context: string, err: unknown): void {
-    const error = err instanceof Error ? err : new Error(String(err));
+    const detail = err instanceof Error ? err.message : String(err);
+    // The context carries the diagnosis (status, overflow size); the
+    // detail is only the provider's own message. Both belong in what
+    // the handler sees, otherwise a 401 is indistinguishable from a
+    // rate limit.
+    const error = new Error(detail ? `${context}: ${detail}` : context);
     if (this.errorHandler) {
       this.errorHandler(error);
     } else {
-      console.error(`[STT/Whisper] ${context}:`, error.message);
+      console.error(`[STT/Whisper] ${context}`, detail);
     }
   }
 
@@ -96,15 +113,20 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
   async flush(): Promise<void> {
     // Serialize overlapping flushes so two turns cannot transcribe the same
     // buffer twice.
-    this.inFlight = this.inFlight.then(() => this.transcribe());
+    //
+    // The chain must recover from failure. Chaining onto a rejected promise
+    // would leave `inFlight` permanently rejected, so every later `flush()` —
+    // and `close()`, which flushes — would reject too, for the rest of the
+    // call. Recapturing the rejection keeps the queue usable.
+    const previous = this.inFlight.catch(() => {});
+    this.inFlight = previous.then(() => this.transcribe());
     await this.inFlight;
   }
 
   private async transcribe(): Promise<void> {
-    if (this.chunks.length === 0) return;
+    if (this.buffer.isEmpty) return;
 
-    const fullPcm = Buffer.concat(this.chunks);
-    this.chunks = [];
+    const fullPcm = this.buffer.take();
 
     // Skip empty or tiny audio bursts (< 0.2s of audio at 16kHz mono 16-bit = 6400 bytes)
     if (fullPcm.length < 3200) return;
@@ -140,11 +162,26 @@ class WhisperSTTStream extends EventEmitter implements STTStream {
           Authorization: `Bearer ${this.config.apiKey}`,
         },
         body: formData,
+        // Batch transcription is the one part of a voice turn where waiting
+        // is unavoidable, but not waiting forever: a hung request would wedge
+        // the turn and the agent would go silent for the rest of the call.
+        signal: AbortSignal.timeout(this.config.timeoutMs ?? 15_000),
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        this.reportError(`transcription error ${res.status}`, errText);
+        const errText = await res.text().catch(() => "");
+        // An auth failure or a rate limit is not a reason to give up on the
+        // call, but it must be distinguishable from a bad transcription.
+        this.reportError(
+          `transcription failed (${res.status}${
+            res.status === 401 || res.status === 403
+              ? " — check the Whisper API key"
+              : res.status === 429
+                ? " — rate limited"
+                : ""
+          })`,
+          new Error(errText || res.statusText),
+        );
         return;
       }
 

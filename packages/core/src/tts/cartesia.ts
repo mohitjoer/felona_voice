@@ -1,3 +1,4 @@
+import { streamPcm } from "./stream-pcm.js";
 import type { TTSProvider, TTSOptions, AudioChunk } from "../types.js";
 
 export interface CartesiaTTSOptions {
@@ -34,14 +35,16 @@ export class CartesiaTTS implements TTSProvider {
   ): AsyncIterable<AudioChunk> {
     const voiceId = options?.voice ?? this.defaultVoice;
 
-    const response = await fetch(`${this.baseUrl}/tts/bytes`, {
-      method: "POST",
-      headers: {
+    yield* streamPcm(
+      `${this.baseUrl}/tts/bytes`,
+      {
+        method: "POST",
+        headers: {
         "X-API-Key": this.apiKey,
         "Cartesia-Version": "2024-06-10",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
+        body: JSON.stringify({
         model_id: this.modelId,
         transcript: text,
         voice: {
@@ -54,40 +57,13 @@ export class CartesiaTTS implements TTSProvider {
           sample_rate: this.sampleRate,
         },
       }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Cartesia TTS failed: ${response.status} ${error}`);
-    }
-
-    if (!response.body) {
-      throw new Error("Cartesia TTS returned no response body");
-    }
-
-    const reader = response.body.getReader();
-    let timestampMs = 0;
-    const bytesPerSecond = this.sampleRate * 2; // sampleRate * 16-bit mono
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk: AudioChunk = {
-          data: Buffer.from(value),
-          sampleRate: this.sampleRate,
-          channels: 1,
-          bitDepth: 16,
-          timestampMs,
-        };
-
-        timestampMs += (value.length / bytesPerSecond) * 1000;
-        yield chunk;
-      }
-    } finally {
-      reader.releaseLock();
-    }
+      },
+      {
+        sampleRate: this.sampleRate,
+        providerLabel: "Cartesia TTS",
+        signal: options?.signal,
+      },
+    );
   }
 }
 

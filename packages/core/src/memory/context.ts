@@ -34,6 +34,29 @@ export class ConversationMemory extends EventEmitter implements MemoryManager {
     this.emit("turnAdded", turn);
   }
 
+  /**
+   * Seeds memory from a persisted session record.
+   *
+   * This is what makes a shared `SessionStore` usable: without it the store is
+   * a write-only mirror, and a call whose audio lands on a different process
+   * resumes with an empty conversation. With it, any node can reconstruct the
+   * working memory it needs.
+   *
+   * Only the most recent `maxTurns` are restored, matching what a live call
+   * would have held anyway.
+   */
+  rehydrate(record: { turns?: ConversationTurn[]; slots?: Record<string, unknown> }): void {
+    if (Array.isArray(record.turns)) {
+      const window = record.turns.slice(-this.maxTurns);
+      this.turns = window.map((turn) => ({ ...turn }));
+    }
+    if (record.slots) {
+      for (const [key, value] of Object.entries(record.slots)) {
+        this.slots.set(key, value);
+      }
+    }
+  }
+
   getTurns(): ConversationTurn[] {
     return [...this.turns];
   }

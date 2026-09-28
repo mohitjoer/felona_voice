@@ -1,3 +1,4 @@
+import { streamPcm } from "./stream-pcm.js";
 import type { TTSProvider, TTSOptions, AudioChunk } from "../types.js";
 
 export interface PollyTTSOptions {
@@ -51,50 +52,25 @@ export class PollyTTS implements TTSProvider {
         : `Bearer ${this.apiKey}`;
     }
 
-    const response = await fetch(this.endpointUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
+    yield* streamPcm(
+      this.endpointUrl,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
         OutputFormat: "pcm",
         SampleRate: String(this.sampleRate),
         Text: text,
         VoiceId: voiceId,
         Engine: this.engine,
       }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`AWS Polly TTS failed: ${response.status} ${error}`);
-    }
-
-    if (!response.body) {
-      throw new Error("AWS Polly TTS returned no response body");
-    }
-
-    const reader = response.body.getReader();
-    let timestampMs = 0;
-    const bytesPerSecond = this.sampleRate * 2;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk: AudioChunk = {
-          data: Buffer.from(value),
-          sampleRate: this.sampleRate,
-          channels: 1,
-          bitDepth: 16,
-          timestampMs,
-        };
-
-        timestampMs += (value.length / bytesPerSecond) * 1000;
-        yield chunk;
-      }
-    } finally {
-      reader.releaseLock();
-    }
+      },
+      {
+        sampleRate: this.sampleRate,
+        providerLabel: "AWS Polly TTS",
+        signal: options?.signal,
+      },
+    );
   }
 }
 

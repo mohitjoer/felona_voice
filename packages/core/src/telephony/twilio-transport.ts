@@ -11,6 +11,8 @@ import type {
 } from "../types.js";
 import { decodeTelephonyAudio, encodeTelephonyAudio, type G711Encoding } from "./codec.js";
 import { createTwilioStreamTwiML } from "./twiml.js";
+import { createOpsHandler } from "../transport/ops.js";
+import type { MetricsRegistry } from "../observability/metrics.js";
 
 export interface TwilioTransportOptions extends TransportOptions {
   /**
@@ -24,6 +26,24 @@ export interface TwilioTransportOptions extends TransportOptions {
    * Set to null to disable automatic HTTP TwiML serving.
    */
   webhookPath?: string | null;
+  /**
+   * Accept webhook requests whose Twilio signature cannot be verified.
+   *
+   * Default: false. An unverifiable request is rejected, because the webhook
+   * is what lets a caller place a call into the agent. Opt out only when the
+   * endpoint is provably unreachable except by Twilio.
+   */
+  allowUnverified?: boolean;
+  /** Registry scraped by `/metrics`. Omit to serve no metrics route. */
+  metrics?: MetricsRegistry;
+  /** Serve `/health`. Default: true. */
+  exposeHealth?: boolean;
+  /** Max simultaneous calls. Default: unset (unbounded). */
+  maxConnections?: number;
+  /** Media socket ping interval in ms. 0 disables. Default: 30000. */
+  heartbeatIntervalMs?: number;
+  /** Max bytes per media frame. Default: 1MB. */
+  maxPayloadBytes?: number;
 
   /**
    * Public stream URL forwarded in auto-served TwiML (e.g. "wss://voice.mycompany.com/media").
@@ -79,6 +99,8 @@ interface TwilioSessionEntry {
   encoding: G711Encoding;
   /** Sample rate declared by the stream, in Hz. */
   sampleRate: number;
+  /** Cleared on each ping and set again on pong, to detect a dead socket. */
+  isAlive: boolean;
 }
 
 /**
@@ -98,6 +120,9 @@ export class TwilioTransport extends EventEmitter implements Transport {
   private wss: WebSocketServer | null = null;
   private httpServer: http.Server | null = null;
   private ownsHttpServer = false;
+  /** Serves `/health` and `/metrics`. */
+  private opsHandler?: (req: IncomingMessage, res: ServerResponse) => boolean;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private options: TwilioTransportOptions = { port: 8080 };
 
   private sessions = new Map<string, TwilioSessionEntry>();
@@ -113,6 +138,15 @@ export class TwilioTransport extends EventEmitter implements Transport {
     if (options) {
       this.options = { ...this.options, ...options };
     }
+    this.opsHandler = createOpsHandler({
+      metrics: this.options.metrics,
+      exposeHealth: this.options.exposeHealth !== false,
+      getState: () => ({
+        provider: "twilio",
+        activeCalls: this.sessions.size,
+        maxConnections: this.options.maxConnections,
+      }),
+    });
   }
 
   async start(options?: TransportOptions): Promise<void> {
@@ -134,6 +168,10 @@ export class TwilioTransport extends EventEmitter implements Transport {
           this.wss = new WebSocketServer({
             server: this.httpServer,
             path: streamPath,
+            // The media socket is the live audio path. Leaving it open lets
+            // anyone who can reach the port open a call and stream audio in.
+            verifyClient: this.buildMediaVerifyClient(),
+            maxPayload: this.options.maxPayloadBytes ?? 1024 * 1024,
           });
           this.setupWss();
           resolve();
@@ -147,10 +185,13 @@ export class TwilioTransport extends EventEmitter implements Transport {
           this.wss = new WebSocketServer({
             server: this.httpServer,
             path: streamPath,
+            verifyClient: this.buildMediaVerifyClient(),
+            maxPayload: this.options.maxPayloadBytes ?? 1024 * 1024,
           });
           this.setupWss();
 
           this.httpServer.listen(port, host, () => {
+            this.startHeartbeat();
             console.log(`[Telephony] Twilio Transport listening on ${host}:${port}`);
             console.log(`  Stream WebSocket:  ws://${host}:${port}${streamPath}`);
             if (webhookPath) {
@@ -173,11 +214,27 @@ export class TwilioTransport extends EventEmitter implements Transport {
     if (!this.wss) return;
 
     this.wss.on("connection", (ws, req) => {
+      // Telephony had no admission control at all, so one process would take
+      // as many calls as the carrier sent it.
+      const max = this.options.maxConnections;
+      if (max !== undefined && this.sessions.size >= max) {
+        console.warn(
+          `[Telephony] Rejecting call: ${this.sessions.size} active (max ${max})`,
+        );
+        ws.close(1013, "Server at capacity");
+        return;
+      }
       this.handleWebSocket(ws, req);
     });
 
     this.wss.on("error", (err) => {
-      this.emit("error", err);
+      // Guarded: an unhandled `error` emit throws inside this handler and
+      // takes the process down along with every call in flight.
+      if (this.listenerCount("error") > 0) {
+        this.emit("error", err);
+      } else {
+        console.error(`[Telephony] WebSocket server error: ${err.message}`);
+      }
     });
   }
 
@@ -216,6 +273,13 @@ export class TwilioTransport extends EventEmitter implements Transport {
       const body = await readRequestBody(req);
 
       if (!this.isValidTwilioSignature(req, body)) {
+        // Logged because a rejected webhook means a real call is being
+        // dropped, which is otherwise invisible from the caller's side.
+        console.warn(
+          `[Telephony] Rejected unsigned or invalid webhook request from ${
+            req.socket.remoteAddress ?? "unknown"
+          }`,
+        );
         res.writeHead(403, { "Content-Type": "text/plain" });
         res.end("Forbidden");
         return;
@@ -246,20 +310,10 @@ export class TwilioTransport extends EventEmitter implements Transport {
       return;
     }
 
-    // Health check endpoint
-    if (pathname === "/" || pathname === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          status: "ok",
-          service: "felona-voice-telephony",
-          provider: "twilio",
-          activeCalls: this.sessions.size,
-          timestamp: new Date().toISOString(),
-        })
-      );
-      return;
-    }
+    // Health and metrics, shared with the other transports so all three
+    // report the same shape. Reports 503 at capacity so a load balancer stops
+    // sending calls here rather than queueing ones we cannot serve.
+    if (this.opsHandler && this.opsHandler(req, res)) return;
 
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not Found");
@@ -305,18 +359,24 @@ export class TwilioTransport extends EventEmitter implements Transport {
    * are set, since the signature covers the exact URL Twilio requested.
    */
   private isValidTwilioSignature(req: IncomingMessage, body: string): boolean {
-    const { authToken, publicUrl } = this.options;
+    const { authToken, publicUrl, allowUnverified } = this.options;
     const signature = req.headers["x-twilio-signature"];
 
     if (!authToken || !publicUrl) {
-      if (!this.warnedAboutSignature && signature) {
-        this.warnedAboutSignature = true;
-        console.warn(
-          "[Telephony] Received an X-Twilio-Signature but authToken/publicUrl are not " +
-            "configured, so the request cannot be verified. Set both to validate callers.",
-        );
-      }
-      return true;
+      if (this.options.webhookPath === null) return true;
+
+      if (this.warnedAboutSignature) return !allowUnverified;
+      this.warnedAboutSignature = true;
+      console.warn(
+        "[Telephony] X-Twilio-Signature cannot be verified: " +
+          (authToken ? "publicUrl" : "authToken") +
+          " is not configured. The webhook is unauthenticated, so anyone who " +
+          "can reach this port can place calls into the agent. Set both, or " +
+          'pass allowUnverified: true if the webhook is not publicly reachable.',
+      );
+      // Failing closed: an unverifiable request is not a trustworthy request.
+      // Opting out is explicit, not the default.
+      return allowUnverified === true;
     }
 
     if (typeof signature !== "string" || !signature) return false;
@@ -339,6 +399,45 @@ export class TwilioTransport extends EventEmitter implements Transport {
     const b = Buffer.from(signature, "utf8");
     if (a.length !== b.length) return false;
     return timingSafeEqual(a, b);
+  }
+
+  /**
+   * Gate for the media WebSocket.
+   *
+   * Twilio itself does not send the caller's auth token to the media socket,
+   * so when `authToken` is configured this requires the same shared secret on
+   * the upgrade request. Unconfigured means open, which is only appropriate
+   * behind a private network — the constructor warns about it.
+   */
+  private buildMediaVerifyClient():
+    | ((info: { origin: string; secure: boolean; req: IncomingMessage }) => boolean)
+    | undefined {
+    const { authToken, allowUnverified } = this.options;
+    if (!authToken || allowUnverified === true) return undefined;
+
+    return (info) => {
+      const req = info.req;
+      const auth = req.headers.authorization;
+      const bearer =
+        typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")
+          ? auth.slice(7).trim()
+          : "";
+
+      let queryToken = "";
+      try {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        queryToken = url.searchParams.get("token") ?? "";
+      } catch {
+        return false;
+      }
+
+      const provided = bearer || queryToken;
+      if (!provided) return false;
+
+      const a = Buffer.from(provided, "utf8");
+      const b = Buffer.from(authToken, "utf8");
+      return a.length === b.length && timingSafeEqual(a, b);
+    };
   }
 
   /**
@@ -407,7 +506,21 @@ export class TwilioTransport extends EventEmitter implements Transport {
               startTime: Date.now(),
               encoding,
               sampleRate,
+              isAlive: true,
             };
+
+            // A streamSid is the session's identity, and it arrives from an
+            // unauthenticated peer. Reusing a live one would overwrite the
+            // map entry, so the new socket could inject audio into someone
+            // else's call and the original socket's close would then delete
+            // the hijacked session.
+            if (this.sessions.has(streamSid)) {
+              console.warn(
+                `[Telephony] Rejected duplicate streamSid ${streamSid} — a call is already bound to it`,
+              );
+              ws.close(1008, "streamSid already active");
+              return;
+            }
 
             this.sessions.set(streamSid, sessionEntry);
             console.log(
@@ -485,12 +598,21 @@ export class TwilioTransport extends EventEmitter implements Transport {
     });
 
     ws.on("close", () => {
-      if (sessionEntry) {
-        sessionEntry.session.state = "ended";
-        this.disconnectHandler?.(sessionEntry.session);
-        this.emit("callEnded", sessionEntry.session);
-        this.sessions.delete(sessionEntry.streamSid);
-      }
+      if (!sessionEntry) return;
+      // Delete first and only report if this handler still owned the entry. A
+      // socket close is asynchronous, so an earlier `stop()` or
+      // `closeSession()` has already removed it — reporting again would run
+      // call teardown and logging twice.
+      const owned = this.sessions.delete(sessionEntry.streamSid);
+      if (!owned) return;
+      sessionEntry.session.state = "ended";
+      this.disconnectHandler?.(sessionEntry.session);
+      this.emit("callEnded", sessionEntry.session);
+    });
+
+    // A pong proves the caller is still there; a missing one is reaped.
+    ws.on("pong", () => {
+      if (sessionEntry) sessionEntry.isAlive = true;
     });
 
     ws.on("error", (error) => {
@@ -498,11 +620,67 @@ export class TwilioTransport extends EventEmitter implements Transport {
     });
   }
 
-  async stop(): Promise<void> {
-    for (const [, entry] of this.sessions) {
-      entry.session.state = "ended";
+  /**
+   * Pings media sockets and reaps the ones that stopped answering.
+   *
+   * Telephony had no heartbeat at all, so a half-open media socket held its
+   * session and concurrency slot for the life of the process: a caller who
+   * hung up without a clean close was never noticed.
+   */
+  private startHeartbeat(): void {
+    const interval = this.options.heartbeatIntervalMs ?? 30_000;
+    if (interval <= 0 || this.heartbeatTimer) return;
+
+    this.heartbeatTimer = setInterval(() => {
+      for (const [streamSid, entry] of this.sessions) {
+        if (!entry.isAlive) {
+          console.warn(
+            `[Telephony] No pong from ${streamSid}; dropping the media socket`,
+          );
+          this.closeSession(streamSid).catch(() => {});
+          continue;
+        }
+        entry.isAlive = false;
+        try {
+          entry.ws.ping();
+        } catch {
+          this.closeSession(streamSid).catch(() => {});
+        }
+      }
+    }, interval);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeatTimer) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  /**
+   * Tears down one call, leaving the Twilio server and every other call
+   * running.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return;
+    // Remove before closing so the socket's own close handler does not report a
+    // disconnect we are already handling.
+    this.sessions.delete(sessionId);
+    entry.session.state = "ended";
+    this.disconnectHandler?.(entry.session);
+    this.emit("callEnded", entry.session);
+    try {
       entry.ws.close();
-      this.disconnectHandler?.(entry.session);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.stopHeartbeat();
+    for (const streamSid of [...this.sessions.keys()]) {
+      await this.closeSession(streamSid);
     }
     this.sessions.clear();
 
