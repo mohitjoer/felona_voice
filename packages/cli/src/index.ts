@@ -15,10 +15,16 @@ import {
   type Scenario,
 } from "felona-voice";
 
-const args = process.argv.slice(2);
-const command = args[0] || "help";
-
-async function main() {
+/**
+ * Runs one CLI invocation.
+ *
+ * Takes argv as a parameter rather than reading `process.argv` at module
+ * scope, so the command can be exercised directly from tests. Reading argv at
+ * import time also meant the entry could not be imported without executing.
+ */
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const args = argv;
+  const command = args[0] || "help";
   switch (command) {
     case "visualize":
     case "graph":
@@ -36,10 +42,19 @@ async function main() {
 
     case "help":
     case "--help":
-    case "-h":
-    default: {
+    case "-h": {
       printHelp();
       break;
+    }
+
+    default: {
+      // A typo used to fall through to help with no indication, so a
+      // misspelled command looked like it had run. Say what was wrong, and
+      // fail: silently doing nothing is the worst outcome for a CI step.
+      console.error(
+        `Unknown command "${command}". Run \`felona help\` to see the available commands.`,
+      );
+      process.exit(1);
     }
   }
 }
@@ -330,7 +345,14 @@ EXAMPLES:
 `);
 }
 
-main().catch((err) => {
-  console.error("Error:", err);
-  process.exit(1);
-});
+// Only auto-run when invoked as a program, not when imported by a test.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error("Error:", err);
+    process.exit(1);
+  });
+}
