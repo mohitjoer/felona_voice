@@ -21,7 +21,7 @@ permissions:
 jobs:
   # ── Fast feedback: typecheck, lint, build, test ──────────────────────────
   verify:
-    name: Typecheck, lint, build, test
+    name: Build, typecheck, lint, test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,14 +38,14 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Build
+        run: npm run build
+
       - name: Typecheck
         run: npm run typecheck
 
       - name: Lint
         run: npm run lint
-
-      - name: Build
-        run: npm run build
 
       - name: Test
         run: npm test

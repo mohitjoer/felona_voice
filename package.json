@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/cli",
-    "check": "npm run typecheck && npm run lint && npm run build && npm test && npm run check:docs && npm run check:badge",
+    "check": "npm run build && npm run typecheck && npm run lint && npm test && npm run check:docs && npm run check:badge",
     "check:badge": "node scripts/check-badge.mjs",
     "check:docs": "node scripts/check-docs.mjs",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo *.tsbuildinfo",
