@@ -32,7 +32,17 @@ jobs:
           cache: "npm"
 
       - name: 📦 Install dependencies
-        run: npm ci || npm install
+        # `npm ci` alone, deliberately. The previous `npm ci || npm install`
+        # silently fell back to resolving caret ranges against whatever was
+        # newest at build time, so a green run did not prove the committed
+        # lockfile is installable.
+        run: npm ci
+
+      - name: 🛡️ Audit production dependencies
+        # Runtime deps only. The dev tree (vitest/vite/esbuild) carries
+        # advisories that do not ship; a production audit is the gate that
+        # matters for a published package.
+        run: npm audit --omit=dev
 
       - name: 🔨 Compile TypeScript (Workspaces)
         id: build
@@ -53,6 +63,10 @@ jobs:
         run: |
           set -o pipefail
           npm test 2>&1 | tee test-output.log
+
+      - name: 🧪 Run CLI package tests
+        id: cli-test
+        run: npm test --workspace packages/cli
 
       - name: 🧷 Run Agent Regression Scenarios
         id: scenarios
