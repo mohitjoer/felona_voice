@@ -3,10 +3,11 @@
 All notable changes to Felona Voice are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [3.0.1] — 2026-10-01
+## [3.1.0] — 2026-10-01
 
-Additive release. Local routing is untouched and remains the default, so this
-upgrades without changing how an existing agent behaves.
+Minor release: new public API, no behaviour change. Local routing is untouched
+and remains the default, so this upgrades without changing how an existing agent
+behaves.
 
 ### Added
 
