@@ -19,6 +19,8 @@ import type {
   InteractOptions,
   InteractResult,
   EmbeddingProvider,
+  DecisionProvider,
+  DecisionProviderConfig,
   Transport,
 } from "./types.js";
 import { WebSocketTransport, type WebSocketTransportOptions } from "./transport/websocket.js";
@@ -30,6 +32,7 @@ import { SessionManager, createSessionManager } from "./session/index.js";
 import { JEVEngine } from "./jev/engine.js";
 import { OpenAIEmbeddingProvider } from "./jev/embeddings.js";
 import { FastSemanticEmbeddingProvider } from "./jev/fast-embeddings.js";
+import { SystemOneDecisionProvider } from "./jev/decision-provider.js";
 import { ConversationMemory } from "./memory/context.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { createFelonaTracer, type FelonaTracer } from "./observability/tracing.js";
@@ -200,6 +203,8 @@ export class FelAgent extends EventEmitter {
     this.jev = new JEVEngine({
       embeddingProvider,
       confidenceThreshold: config.jev?.confidenceThreshold ?? 0.35,
+      decisionProvider: this.resolveDecisionProvider(config.jev?.decision),
+      onDecisionError: config.jev?.decision?.onError,
     });
 
     // Retrieval shares the routing embedder, so a custom provider improves
@@ -266,6 +271,48 @@ export class FelAgent extends EventEmitter {
     }
 
     return new FastSemanticEmbeddingProvider();
+  }
+
+  /**
+   * Resolve the configured decision backend, if any.
+   *
+   * Returns null for the default, which is local routing. An unknown name
+   * throws here rather than at the first turn, so a typo is a startup error
+   * rather than a call that quietly keeps using similarity routing.
+   */
+  private resolveDecisionProvider(
+    config: DecisionProviderConfig | undefined,
+  ): DecisionProvider | null {
+    if (!config) return null;
+
+    if (typeof config.provider === "object") return config.provider;
+
+    const name = config.provider.toLowerCase();
+
+    if (name !== "systemone" && name !== "system-one") {
+      throw new Error(
+        `Unknown jev.decision.provider "${config.provider}". ` +
+          'Use "systemone", or pass a DecisionProvider instance.',
+      );
+    }
+
+    // A hosted endpoint without a key fails 401 on the first live call, after
+    // the call is already connected. Caught here instead.
+    const hosted = !config.baseUrl || /^https?:\/\/(?!localhost|127\.0\.0\.1)/.test(config.baseUrl);
+    if (hosted && !config.apiKey) {
+      throw new Error(
+        `jev.decision.provider "${name}" points at ${config.baseUrl ?? "the hosted endpoint"} but no apiKey was given. ` +
+          "Pass jev.decision.apiKey, or set baseUrl to a local server that does not require one.",
+      );
+    }
+
+    return new SystemOneDecisionProvider({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      model: config.model,
+      timeoutMs: config.timeoutMs,
+      headers: config.headers,
+    });
   }
 
   /** Pick the transport from config, falling back to plain WebSocket. */
@@ -475,7 +522,9 @@ export class FelAgent extends EventEmitter {
     );
     this.logger.log(
       "info",
-      `  JEV: cold-start semantic routing (${this.jev.providerName}, no trained predictor)`,
+      this.jev.usesDecisionProvider
+        ? `  JEV: decision-model routing (${this.jev.routingBackend})`
+        : `  JEV: cold-start semantic routing (${this.jev.providerName}, no trained predictor)`,
     );
     this.logger.log(
       "info",

@@ -1,7 +1,7 @@
 {
   "name": "felona-cli",
-  "version": "3.0.0",
-  "description": "CLI for Felona Voice \u2014 scaffold, run, and train voice agents",
+  "version": "3.0.1",
+  "description": "CLI for Felona Voice — scaffold, run, and train voice agents",
   "bin": {
     "felona": "dist/index.js"
   },
@@ -17,7 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "felona-voice": "^3.0.0"
+    "felona-voice": "^3.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

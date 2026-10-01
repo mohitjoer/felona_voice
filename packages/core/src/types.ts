@@ -617,6 +617,130 @@ export interface EmbeddingProvider {
   readonly dimensions: number;
 }
 
+// ─── Decision Providers ─────────────────────────────────────────────────────
+
+/**
+ * A bounded question posed about a state.
+ *
+ * The three shapes mirror the System One contract. `choice` picks one option
+ * from a declared set, `noul` reports the probability that a proposition holds,
+ * and `score` reports a position on ordered levels. None of them generate text,
+ * so nothing has to be parsed back out of prose.
+ */
+export type DecisionQuestion =
+  | {
+      type: "choice";
+      instructions: string;
+      /** Option name → what that option means, or null when the name says enough. */
+      criteria: Record<string, string | null>;
+    }
+  | {
+      type: "noul";
+      instructions: string;
+      /** Optional descriptions of what yes and no each mean. */
+      criteria?: { true?: string; false?: string };
+    }
+  | {
+      type: "score";
+      instructions: string;
+      /** Level descriptions, ordered lowest to highest. */
+      criteria: string[];
+    };
+
+/** One answer, keyed by the question id it belongs to. */
+export interface DecisionAnswers {
+  /** Present for a `choice` question. */
+  choice?: string;
+  /** Probability of "yes", 0–1. Present for a `noul` question. */
+  noul?: number;
+  /** Probability-weighted level index, 0-based. Present for a `score` question. */
+  score?: number;
+  /** Every option's probability for `choice`; every level's for `score`. */
+  probabilities?: Record<string, number>;
+  /** How concentrated the distribution is. Not a measure of correctness. */
+  confidence?: number;
+  /** Level index → description, for a `score` question. */
+  legend?: Record<string, string>;
+}
+
+/** What one decision request cost, when the provider reports it. */
+export interface DecisionUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** The result of a decision request. */
+export interface DecisionResult {
+  /** One answer per question id requested. */
+  answers: Record<string, DecisionAnswers>;
+  /** The model version that answered, when the provider reports one. */
+  model?: string;
+  usage?: DecisionUsage;
+}
+
+/** Options for a single {@link DecisionProvider.decide} call. */
+export interface DecisionRequestOptions {
+  /** Cancels the request, e.g. on barge-in. */
+  signal?: AbortSignal;
+  /** Deadline in ms. */
+  timeoutMs?: number;
+}
+
+/**
+ * A backend that answers bounded questions about a state.
+ *
+ * This is the routing step's other half. Where an embedding provider turns
+ * text into a vector for cosine comparison, a decision provider reads declared
+ * option probabilities directly off a model — no sampled answer token, and a
+ * score that is an actual probability rather than a similarity.
+ */
+export interface DecisionProvider {
+  /** Provider name, used in logs and errors. */
+  readonly name: string;
+  /** The model this provider pins, when it exposes one. */
+  readonly model?: string;
+  /**
+   * Ask every question about one state, in a single call.
+   *
+   * All questions share the state but not each other's answers, so one request
+   * is cheaper and faster than one request per question.
+   */
+  decide(
+    state: string,
+    questions: Record<string, DecisionQuestion>,
+    options?: DecisionRequestOptions,
+  ): Promise<DecisionResult>;
+}
+
+/** Configuration for a decision-model routing backend. */
+export interface DecisionProviderConfig {
+  /**
+   * Backend to talk to, or a provider instance.
+   *
+   * Built-in names: `"systemone"` (the System One wire protocol, served by the
+   * hosted service and by compatible local servers). For anything else, pass an
+   * instance implementing {@link DecisionProvider}.
+   */
+  provider: string | DecisionProvider;
+  /** API key, where the endpoint requires one. */
+  apiKey?: string;
+  /** Base URL, overriding the backend's default. */
+  baseUrl?: string;
+  /** Model name to pin. Prefer a pinned version over a moving alias. */
+  model?: string;
+  /** Deadline in ms per decision. Default: 5000. */
+  timeoutMs?: number;
+  /** Extra headers merged into every request. */
+  headers?: Record<string, string>;
+  /**
+   * What to do when the decision call fails.
+   *
+   * `"fallback"` (default) routes to the `fallback` action instead of failing
+   * the turn. `"throw"` rejects, so a misconfigured deployment is loud.
+   */
+  onError?: "fallback" | "throw";
+}
+
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
 /** Lifecycle hooks for the agent */
@@ -682,6 +806,15 @@ export interface FelAgentConfig {
     embeddingProvider?: string | EmbeddingProvider;
     /** API key for the `"openai"` embedding provider */
     embeddingApiKey?: string;
+    /**
+     * Route turns through a decision model instead of embedding similarity.
+     *
+     * Omit it and routing stays local: the action descriptions are embedded once
+     * and each turn is matched by cosine similarity. Configure it and the same
+     * action space is sent as one choice question per turn, answered with a
+     * probability per action.
+     */
+    decision?: DecisionProviderConfig;
     /**
      * Path to a trained predictor model.
      *

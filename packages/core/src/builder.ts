@@ -4,6 +4,7 @@ import type {
   AgentTool,
   ActionContext,
   EmbeddingProvider,
+  DecisionProviderConfig,
   InteractOptions,
   InteractResult,
   STTProvider,
@@ -37,6 +38,7 @@ export class AgentBuilder {
   private sttConfig?: { provider: string; apiKey?: string; [k: string]: unknown } | STTProvider;
   private ttsConfig?: { provider: string; apiKey?: string; voice?: string; [k: string]: unknown } | TTSProvider;
   private customEmbeddingProvider?: EmbeddingProvider;
+  private decisionConfig?: DecisionProviderConfig;
   private confidenceThreshold = 0.35;
   private transportConfig?: ({ type?: "websocket" | "twilio" | "webrtc"; port?: number; host?: string; path?: string; streamUrl?: string; [k: string]: unknown } | Transport);
   private sessionConfig?: SessionManagerOptions;
@@ -419,6 +421,38 @@ export class AgentBuilder {
   }
 
   /**
+   * Route turns through a decision model instead of embedding similarity.
+   *
+   * The actions stay the routing space either way — this changes how they are
+   * scored. By default each action description is embedded once and a turn is
+   * matched by cosine similarity, entirely local. With a decision backend, the
+   * same actions are sent as one choice question and come back with a
+   * probability per action.
+   *
+   * Worth it when you have labelled examples for your own action set, or want
+   * scores you can gate on directly. It adds a network hop per turn and a
+   * dependency on that endpoint being up.
+   *
+   * ```typescript
+   * createAgent("Support")
+   *   .action("refund", "Refund a duplicate or disputed charge", async () => "...")
+   *   .fallback("Let me get you to someone who can help.")
+   *   .decision({
+   *     provider: "systemone",
+   *     apiKey: process.env.SYSTEM_ONE_API_KEY,
+   *     model: "jev-1.13.0",
+   *   });
+   * ```
+   *
+   * Pin an exact model version rather than a moving alias: a release can shift
+   * the probabilities under a threshold you already tuned.
+   */
+  decision(config: DecisionProviderConfig): this {
+    this.decisionConfig = config;
+    return this;
+  }
+
+  /**
    * Instrument calls with a specific OpenTelemetry tracer.
    *
    * Omit it and the agent uses the global OpenTelemetry tracer, which does
@@ -522,6 +556,7 @@ export class AgentBuilder {
       jev: {
         embeddingProvider: this.customEmbeddingProvider,
         confidenceThreshold: this.confidenceThreshold,
+        decision: this.decisionConfig,
       },
       transport: this.transportConfig,
       sessions: this.sessionConfig,

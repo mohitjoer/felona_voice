@@ -69,6 +69,12 @@ export { JEVEngine, createJEVEngine } from "./jev/engine.js";
 export { ActionSpace, cosineSimilarity } from "./jev/action-space.js";
 export { OpenAIEmbeddingProvider } from "./jev/embeddings.js";
 export { FastSemanticEmbeddingProvider } from "./jev/fast-embeddings.js";
+export {
+  DecisionRequestError,
+  SystemOneDecisionProvider,
+  createDecisionProvider,
+  type SystemOneDecisionProviderOptions,
+} from "./jev/decision-provider.js";
 
 // ─── Voice Pipeline ─────────────────────────────────────────────────────────
 export { VoicePipeline, createPipeline } from "./pipeline.js";
@@ -478,6 +484,13 @@ export type {
   // JEV
   JEVEngine as JEVEngineInterface,
   EmbeddingProvider,
+  DecisionProvider,
+  DecisionProviderConfig,
+  DecisionQuestion,
+  DecisionAnswers,
+  DecisionResult,
+  DecisionRequestOptions,
+  DecisionUsage,
   // Hooks
   AgentHooks,
   // Config & Interactions

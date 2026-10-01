@@ -10,7 +10,7 @@
   <a href="https://www.npmjs.com/package/felona-voice"><img src="https://img.shields.io/npm/v/felona-voice.svg?style=flat-square&color=3b82f6" alt="npm version" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square" alt="License: MIT" /></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.5-blue.svg?style=flat-square" alt="TypeScript" /></a>
-  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-584%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
+  <a href="./packages/core/tests"><img src="https://img.shields.io/badge/tests-627%20passed-brightgreen.svg?style=flat-square" alt="Tests" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-green.svg?style=flat-square" alt="Node.js" /></a>
   <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-violet.svg?style=flat-square" alt="PRs Welcome" /></a>
 </p>
@@ -151,6 +151,38 @@ User speaks → STT → "I need help with my order"
 
 Routing is deterministic. If the top match falls below `jev.confidenceThreshold` (default `0.35`), or is ambiguous, the `fallback` action runs instead — so an unrecognized utterance has a defined behaviour rather than an improvised one.
 
+### Decision-model routing
+
+Steps 1–3 above are the default and stay entirely in-process. You can swap step 3 for a **decision model**: a backend that answers bounded questions with probabilities instead of generating text. Your actions become the options of one choice question, so the routing space is unchanged — what changes is that each turn comes back with a probability per action rather than a similarity.
+
+```typescript
+import { createAgent } from "felona-voice";
+
+const agent = createAgent("Support")
+  .action("order_status", "Check delivery status, tracking or delivery ETA for an order", async (ctx) => {
+    const order = await ctx.memory.getSlot("orderId");
+    return `Order ${order} shipped Tuesday and arrives Friday.`;
+  })
+  .action("refund", "Process a refund, return, or billing dispute", async () => "Starting your refund now.")
+  .fallback("Let me get someone who can help with that.")
+  .decision({
+    provider: "systemone",
+    apiKey: process.env.SYSTEM_ONE_API_KEY,
+    model: "jev-1.13.0",
+  });
+```
+
+`.decision()` takes `provider: "systemone"` — the System One wire protocol — which the hosted service serves and so do most self-hosted decision servers, so pointing `baseUrl` at a local one is the only change needed. Pass a `DecisionProvider` instance instead to use your own backend.
+
+Worth it when you have labelled examples for your own action set, or want scores you can gate on directly. It costs a network hop per turn and depends on that endpoint being reachable.
+
+Two things to know before you tune against it:
+
+- **Pin an exact model version.** A release can shift probabilities under a threshold you already set. A moving alias makes that shift invisible.
+- **Recalibrate `confidenceThreshold`.** A decision model reports how concentrated its distribution is, which is not the same quantity as a cosine similarity. A threshold carried over from local routing is not automatically right.
+
+If the call fails, the turn routes to `fallback` rather than failing — set `onError: "throw"` to make a misconfigured deployment loud instead.
+
 **Generating replies with a language model:** the framework has no built-in LLM provider. Call your provider of choice inside an action handler and return its output; routing stays fast while phrasing is generated. See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ## Architecture
@@ -170,6 +202,7 @@ Audio In → VAD → STT → JEV Decision → Action Handler → TTS → Audio O
 | **Content** | Your action handlers — call any LLM/DB/API you like |
 | **VAD** | Energy-based (zero-dependency) |
 | **Embeddings** | OpenAI text-embedding-3-small, FastSemanticEmbedding |
+| **Decisions** | System One protocol (`.decision()`), or your own `DecisionProvider` |
 | **Transport** | WebSocket, Twilio Telephony (Media Streams), WebRTC (browser/mobile) |
 | **Turn taking** | Energy VAD, STT endpointing, adaptive interruption, DTMF keypad |
 | **Slots** | Name, email, phone, address, ZIP, date, card (Luhn-checked) — spoken-input aware |

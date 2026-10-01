@@ -22,7 +22,7 @@ Welcome to the comprehensive documentation for **Felona Voice** — the ultra-lo
 | **[API Reference — WebRTC](./API_REFERENCE.md#11-webrtc-transport-packagescoresrctransportwebrtcts)** | Browser and mobile clients: signalling, PCMU/RTP audio, barge-in. |
 | **[API Reference — Call Analytics](./API_REFERENCE.md#8-call-analytics-packagescoresrcanalytics)** | Post-call outcome, sentiment and escalation scoring. |
 | **[Telephony & Twilio Guide](./TELEPHONY_TWILIO_GUIDE.md)** | Connect voice agents to mobile phone calls via Twilio Media Streams, G.711 μ-law transcoding, and TwiML. **Webhook auth is now required.** |
-| **[Changelog](../CHANGELOG.md)** | Release notes. v3.0.0 contains breaking changes to Twilio auth, concurrency defaults, and MCP environment inheritance. |
+| **[Changelog](../CHANGELOG.md)** | Release notes. v3.0.1 adds decision-model routing; v3.0.0 contains breaking changes to Twilio auth, concurrency defaults, and MCP environment inheritance. |
 | **[Production Guide](./PRODUCTION.md)** | What is enforced by default, what you must configure, metrics, logging, cost tracking, guardrails, horizontal scaling, extension points, pre-flight checklist. |
 | **[Agent Capabilities](./AGENT_CAPABILITIES.md)** | LLM-backed actions, background cancellation on interruption, non-blocking hooks, guardrails, voicemail detection, mid-call prompt override, noise cancellation, interruption tuning. |
 

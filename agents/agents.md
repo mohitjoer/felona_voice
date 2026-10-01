@@ -64,7 +64,17 @@
 - [2026-09-27] Shared cross-module contracts are declared in types.ts as narrow interfaces (e.g. `SessionAccessor`) rather than importing concrete classes or using `any`
 - [2026-09-27] In-memory maps keyed by session id are LRU-bounded and expose an explicit reset/clear method
 - [2026-09-27] Concurrency limits are enforced inside the component that owns the resource, with the reservation taken synchronously before any `await`
-
+- [2026-09-30] A routing backend is resolved in the agent constructor, so an unknown provider name or a missing key is a startup error rather than a per-turn failure
+- [2026-09-30] A provider exposes both `providerName` (what embeds) and `routingBackend` (what decides), because a turn is decided by only one of them
+- [2026-09-30] A union whose branches share a field name is parsed per branch, so a bounds check never reads a field whose units differ between branches
+- [2026-09-30] A decision model's `confidence` is not a similarity. It measures how concentrated the returned distribution is, so a threshold calibrated on embedding routing does not transfer to decision routing. Each backend defines its own formula, and one vendor's `(n·p_max − 1)/(n − 1)` means something different from another's `1 − normalised entropy`.
+- [2026-09-30] A decision model's `confidence` is not a similarity. It measures how concentrated the returned distribution is, so a threshold calibrated on embedding routing does not transfer to decision routing. Each backend defines its own formula, and one vendor's `(n·p_max − 1)/(n − 1)` means something different from another's `1 − normalised entropy`.
+- [2026-09-30] An alias is not a pin. `model: "latest"` moves under a deployed system, and on a calibrated model a release can shift probabilities below a threshold nobody re-tuned. Pin an exact version string.
+- [2026-09-30] Validate a decision response against the request that produced it. A `choice` naming an option never offered, or a question that came back unanswered, is a contract violation — reject it rather than routing on it.
+- [2026-09-30] Distinguish a failed call from a malformed reply. A transport failure can degrade to `fallback` and keep the call alive; a response that violates the contract is a bug, and degrading it hides the bug behind a plausible reply.
+- [2026-09-30] Retry only what a second attempt could fix. A refused connection while a server boots is worth retrying; a 422 rejecting the request's shape is not, and repeating it spends a turn's latency to be told the same thing.
+- [2026-09-30] Verify a vendor's wire format against its published schema before writing a client for it. A preview announcement with no endpoint reference cannot be implemented against; guessing the payload produces a client that looks supported and is not.
+- [2026-09-30] A `score` is a level index and a usage count is a token total. Neither is a probability, so neither belongs behind the 0–1 bounds check that gates a decision.
 
 ## Known Skills
 - [2026-09-21] find-skills — present

@@ -3,6 +3,28 @@
 All notable changes to Felona Voice are recorded here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.1] — 2026-10-01
+
+Additive release. Local routing is untouched and remains the default, so this
+upgrades without changing how an existing agent behaves.
+
+### Added
+
+- **Decision-model routing** via `builder.decision()` and `jev.decision`. The
+  action space is sent as one `choice` question per turn and comes back with a
+  probability per action, instead of being matched by cosine similarity. Local
+  routing is unchanged and remains the default; opting in costs a network hop
+  per turn.
+  `SystemOneDecisionProvider` speaks the System One wire protocol
+  (`POST /v1/systemone`), which the hosted service and most self-hosted decision
+  servers serve — pointing `baseUrl` at a local one is the only change needed.
+  Pass a `DecisionProvider` instance to use a different backend.
+
+  A failed decision call routes to `fallback` rather than failing the turn
+  (`onError: "throw"` to opt out). A response that violates the contract — an
+  unoffered choice, a question left unanswered — always throws, because
+  degrading it would hide the bug behind a plausible reply.
+
 ## [3.0.0] — 2026-09-28
 
 The production-hardening release. **Breaking:** the Twilio webhook now rejects
